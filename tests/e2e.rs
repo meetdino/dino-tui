@@ -55,9 +55,11 @@ impl Dinod {
         // Short: a Unix socket's path has room for about a hundred bytes.
         let root = PathBuf::from(format!("/tmp/dtui-e2e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for d in ["home/.config", "home/work/app", "dino", "claude-config", "codex", "bin", "tmp"] {
+        for d in ["home/.config", "home/work/app", "home/Library", "dino", "claude-config", "codex", "bin", "tmp"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
+        // A file where launchd's agents would go: nothing the test starts can register with launchd.
+        std::fs::write(root.join("home/Library/LaunchAgents"), "").unwrap();
         let standin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/standin/claude");
         std::os::unix::fs::symlink(&standin, root.join("bin/claude")).unwrap();
         std::fs::write(
