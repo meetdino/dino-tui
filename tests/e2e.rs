@@ -129,7 +129,8 @@ impl Tui {
     fn start(env: Vec<(String, String)>, cwd: &Path) -> Tui {
         let (mut m, mut s) = (0, 0);
         let mut ws = libc::winsize { ws_row: ROWS, ws_col: COLS, ws_xpixel: 0, ws_ypixel: 0 };
-        assert_eq!(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) }, 0);
+        // macOS takes the size as `*mut`, Linux as `*const`.
+        assert_eq!(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), (&raw mut ws).cast()) }, 0);
         let (master, slave) = unsafe { (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_dino-tui"));
         cmd.env_clear().envs(env).env("TERM", "xterm-256color").current_dir(cwd);
