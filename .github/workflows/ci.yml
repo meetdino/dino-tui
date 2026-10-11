@@ -18,7 +18,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # The dino whose dinod the end-to-end test runs: the commit dino-core is pinned to in Cargo.toml.
-  DINO_REF: efbc808bf183446d4c5ee367430249c3db2ffb41
+  DINO_REF: 59fd8fb53cc375dd2e7dcaa3d2379ec0eed93d19
 
 jobs:
   fmt:

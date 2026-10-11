@@ -346,19 +346,27 @@ pub fn in_use_text(list: &[dino_core::ipc::ClaudeAccountInfo], chosen: &[u32]) -
         return out;
     };
     let a = &list[at];
-    let picked = chosen.contains(&a.number);
-    let before: &[dino_core::ipc::ClaudeAccountInfo] = if picked { &list[..at] } else { &[] };
-    let after: Vec<String> = list[at + 1..].iter().chain(before.iter()).map(|x| x.number.to_string()).collect();
-    let by = if picked {
-        ", chosen by you"
-    } else if a.number == 1 {
-        ", Claude Code's own sign-in"
-    } else {
-        ", the first that isn't spent"
+    // dinod says which account it goes to first (`chosen`): the user's choice, else account 1. A
+    // dinod from before `use` says none, and tries account 1 first.
+    let first = chosen.first().copied().unwrap_or(1);
+    let picked = first != 1;
+    let first_name = list.iter().find(|x| x.number == first).map(|x| format::printable(&x.label()));
+    // From the one in use on, then round to the ones before the first (dinod tries them last).
+    let from = list.iter().position(|x| x.number == first).unwrap_or(0);
+    let order: Vec<&dino_core::ipc::ClaudeAccountInfo> = list[from..].iter().chain(list[..from].iter()).collect();
+    let me = order.iter().position(|x| x.number == a.number).unwrap_or(0);
+    let after: Vec<String> = order[me + 1..].iter().map(|x| x.number.to_string()).collect();
+    let by = match (a.number == first, a.number == 1) {
+        (true, false) => ", chosen by you".to_string(),
+        (true, true) => ", Claude Code's own sign-in".to_string(),
+        (false, _) => match &first_name {
+            Some(n) => format!(", while {n} is at its limit"),
+            None => String::new(),
+        },
     };
     let then = if after.is_empty() { String::new() } else { format!(" When it's spent, Claude Code falls back to {}.", after.join(", then ")) };
     out.push((format!("In use: {}{by}.{then}", format::printable(&a.label())), false));
-    if picked && a.number != 1 {
+    if picked {
         out.push(("Enter on 1 goes back to Claude Code's own sign-in.".to_string(), true));
     }
     out
@@ -593,6 +601,25 @@ fn picker(f: &mut Frame, p: &Picker, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn who_answers_and_who_follows() {
+        let list = |answering: u32, spent: &[u32]| -> Vec<dino_core::ipc::ClaudeAccountInfo> {
+            let names = ["ada", "work", "spare", "side"];
+            let rows: Vec<serde_json::Value> = (1..=4u32).map(|n| serde_json::json!({"number": n, "answering": n == answering, "spent": spent.contains(&n), "name": names[n as usize - 1]})).collect();
+            serde_json::from_value(serde_json::Value::Array(rows)).unwrap()
+        };
+        let text = |l: &[dino_core::ipc::ClaudeAccountInfo], chosen: &[u32]| in_use_text(l, chosen).into_iter().map(|(t, _)| t).collect::<Vec<_>>().join(" | ");
+        // A dinod from before `use` (no `chosen`), and a newer one's default (account 1): the same.
+        let own = "In use: ada, Claude Code's own sign-in. When it's spent, Claude Code falls back to 2, then 3, then 4.";
+        assert_eq!(text(&list(1, &[]), &[]), own);
+        assert_eq!(text(&list(1, &[]), &[1]), own);
+        // Chosen: from it on, then round to the ones before it.
+        assert_eq!(text(&list(2, &[]), &[2]), "In use: work, chosen by you. When it's spent, Claude Code falls back to 3, then 4, then 1. | Enter on 1 goes back to Claude Code's own sign-in.");
+        // The chosen one spent: the next answers.
+        assert_eq!(text(&list(3, &[2]), &[2]), "In use: spare, while work is at its limit. When it's spent, Claude Code falls back to 4, then 1. | Enter on 1 goes back to Claude Code's own sign-in.");
+        assert_eq!(text(&list(2, &[1]), &[]), "In use: work, while ada is at its limit. When it's spent, Claude Code falls back to 3, then 4.");
+    }
 
     #[test]
     fn fit_and_pad_count_columns() {

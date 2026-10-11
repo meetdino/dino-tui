@@ -457,7 +457,14 @@ fn first_run_setup_the_sidebar_collapsing_accounts_and_usage() {
     tui.wait("side");
     tui.keys(b"j");
     tui.keys(b"\r");
-    tui.wait_for("dinod's answer", |t| t.contains("can't switch accounts yet") || t.contains("Switched to"));
+    let said = tui.wait_for("dinod's answer", |t| t.contains("can't switch accounts yet") || t.contains("Switched to"));
+    // A dinod with `use` (the pinned one has it): account 2 is the one it goes to first now.
+    if said.contains("Switched to work") {
+        let accounts = d.req(serde_json::json!({"type": "claude_accounts", "action": "status"}));
+        let chosen: Vec<u64> = accounts["accounts"]["accounts"].as_array().unwrap().iter().filter(|a| a["chosen"] == true).filter_map(|a| a["number"].as_u64()).collect();
+        assert_eq!(chosen, [2], "{accounts}");
+        tui.wait("In use: work, chosen by you");
+    }
     tui.keys(b"\x1b");
     tui.wait("Enter attach");
 
