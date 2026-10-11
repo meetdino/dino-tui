@@ -106,8 +106,8 @@ pub enum Detail {
 }
 
 /// The sidebar's sections when grouped by project, as the app's sidebar files sessions: each repo's
-/// main checkout, then its worktrees (by branch), repos by name; then folders outside any repo,
-/// then SSH hosts. In each, pinned sessions first, then as dinod numbered them: rows stay put while
+/// main checkout, then its worktrees (by branch), repos by name; then folders outside any repo
+/// (dinod's tree lists those too, with no branch), then SSH hosts. In each, pinned sessions first, then as dinod numbered them: rows stay put while
 /// their status changes.
 pub fn places(sessions: &[SessionInfo], tree: &[RepoInfo]) -> Vec<Section> {
     // (sort key, section)
@@ -115,7 +115,7 @@ pub fn places(sessions: &[SessionInfo], tree: &[RepoInfo]) -> Vec<Section> {
     for (i, s) in sessions.iter().enumerate() {
         let (key, name, detail) = if let Some(h) = &s.host {
             ((3, h.to_lowercase(), 0, s.cwd.clone()), format::printable(&format!("{h}:{}", base(&s.cwd))), Detail::Path(format::printable(&format!("{h}:{}", s.cwd))))
-        } else if let Some(r) = repo_of(&s.cwd, tree) {
+        } else if let Some(r) = repo_of(&s.cwd, tree).filter(|r| r.default_branch.is_some() || !r.worktrees.is_empty()) {
             let inside = |p: &str| !p.is_empty() && (s.cwd == p || s.cwd.strip_prefix(p).is_some_and(|rest| rest.starts_with('/')));
             let wt = r.worktrees.iter().filter(|w| w.path != r.path && inside(&w.path)).max_by_key(|w| w.path.len());
             match wt {
@@ -182,7 +182,9 @@ mod tests {
     fn places_split_worktrees_and_keep_their_order() {
         let tree: Vec<RepoInfo> = serde_json::from_value(serde_json::json!([
             {"path": "/r/app", "name": "app", "worktrees": [{"path": "/r/app", "branch": "main"}, {"path": "/w/app-tabs", "branch": "tabs-compact"}]},
-            {"path": "/r/site", "name": "site", "worktrees": []},
+            {"path": "/r/site", "name": "site", "worktrees": [], "default_branch": "main"},
+            // A plain folder, as dinod's tree lists one: no branch. It goes with the folders.
+            {"path": "/notes", "name": "notes", "worktrees": []},
         ]))
         .unwrap();
         let sessions = [

@@ -768,7 +768,9 @@ impl App {
             };
             return Some(text);
         }
-        let quota = self.quotas.iter().find(|q| q.provider == "anthropic");
+        // Claude's quota as a whole is the account's only while there's one: with several, the
+        // windows are the account's own (as the app's usage panel tells them apart).
+        let quota = self.quotas.iter().find(|q| q.provider == "anthropic").filter(|_| list.len() < 2);
         let windows = if a.windows.is_empty() { quota.map(|q| q.windows.as_slice()).unwrap_or_default() } else { a.windows.as_slice() };
         if let Some(w) = windows.iter().max_by(|x, y| x.utilization.total_cmp(&y.utilization)) {
             text += &format!(" {} {:.0}%", format::printable(&w.name), w.utilization * 100.0);
