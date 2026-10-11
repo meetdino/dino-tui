@@ -168,7 +168,7 @@ These are vim-style, with Tab completion:
   source to borrow from, not to restore.
 - **Protocol:** use `dino-core`'s `ipc` types through a git dependency on meetdino/dino, pinned to
   a release, or a commit when dinod has something dino-tui needs before a release has it (now:
-  after 0.1.12, for the input rate). Never copy the types. The one request sent as plain JSON is the settings round
+  after 0.1.12, for the input rate and choosing the Claude account). Never copy the types. The one request sent as plain JSON is the settings round
   trip (above). dino-core also brings rusqlite (the system SQLite; Linux builds need
   `libsqlite3-dev`) and, on macOS, security-framework, though dino-tui uses neither.
 - **Connection:** the socket path is the one `dino` uses (DINO_HOME aware). If dinod isn't
