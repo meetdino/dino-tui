@@ -19,7 +19,7 @@ cargo clippy --all-targets -- -D warnings
 
 The end-to-end test (`tests/e2e.rs`) drives dino-tui in a pseudo-terminal against a real dinod
 with stand-in agents, in a temporary `HOME` and `DINO_HOME`. It needs a `dino` binary from the
-dino tag `Cargo.toml` pins, named by `DINO_BIN`:
+dino commit `Cargo.toml` pins, named by `DINO_BIN`:
 
 ```sh
 git clone https://github.com/meetdino/dino ../dino
@@ -30,7 +30,9 @@ DINO_BIN=$PWD/../dino/target/debug/dino cargo test --test e2e
 Without `DINO_BIN` it says so and passes; CI sets `DINO_TUI_E2E=1`, which makes a missing
 `DINO_BIN` a failure. It uses a debug build of dino on purpose: only a debug dinod lets the
 stand-in Claude's model calls go to a stand-in API (`DINO_ANTHROPIC_UPSTREAM`) instead of
-Anthropic's. No test uses a real account, token or agent.
+Anthropic's. No test uses a real account, token or agent: stand-ins named `pi` and `codex` sit on
+the test's `PATH` (and its login shell's), ahead of the folders dinod also looks in, so dinod's
+setup probes never run a real agent installed on the machine.
 
 To try dino-tui by hand without touching the dino you use, give it a dinod of its own:
 
