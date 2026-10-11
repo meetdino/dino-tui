@@ -1,10 +1,13 @@
 name: Release
 
 # A v* tag (matching Cargo.toml's version) builds dino-tui for macOS on Apple silicon and Linux on
-# x86_64 and arm64, and puts the tarballs and their SHA-256 sums on the tag's GitHub release.
+# x86_64 and arm64, and puts the tarballs and their SHA-256 sums on the tag's GitHub release. Run
+# by hand (workflow_dispatch), it's a dry run: the same builds and tarballs, kept as the run's
+# artifacts, and no release.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions: {}
 
@@ -36,6 +39,7 @@ jobs:
         with:
           persist-credentials: false
       - name: The tag is the crate's version
+        if: github.ref_type == 'tag'
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
@@ -51,7 +55,8 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          name="dino-tui-${GITHUB_REF_NAME#v}-$TARGET"
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          name="dino-tui-$version-$TARGET"
           mkdir "$name"
           cp target/release/dino-tui LICENSE README.md "$name/"
           tar -czf "$name.tar.gz" "$name"
@@ -64,6 +69,7 @@ jobs:
 
   release:
     needs: build
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
