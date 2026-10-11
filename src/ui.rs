@@ -48,13 +48,13 @@ pub fn fit(s: &str, w: usize) -> String {
 }
 
 /// `s` padded (or cut) to exactly `w` columns.
-fn pad(s: &str, w: usize) -> String {
+pub fn pad(s: &str, w: usize) -> String {
     let s = fit(s, w);
     let n = w.saturating_sub(s.width());
     format!("{s}{}", " ".repeat(n))
 }
 
-fn rpad(s: &str, w: usize) -> String {
+pub fn rpad(s: &str, w: usize) -> String {
     let s = fit(s, w);
     format!("{}{s}", " ".repeat(w.saturating_sub(s.width())))
 }
@@ -69,6 +69,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let bottom = Rect { y: area.y + area.height - 1, height: 1, ..area };
     match &app.screen {
         Screen::List => list(f, app, body),
+        Screen::Setup(_) => crate::setup::draw(f, app, body),
         Screen::Accounts(_) => accounts(f, app, body),
         Screen::Stats(_) => stats(f, app, body),
         Screen::Found(_) => found(f, app, body),
@@ -214,16 +215,23 @@ fn bottom_line(f: &mut Frame, app: &App, area: Rect) {
     };
     // Right: the live tok/s (hidden at 0), the Claude account and its quota, what needs you. When
     // it's tight, the rate and then the account give way, what needs you last.
+    // The setup card says where things stand instead; accounts and usage show it all above.
     let mut parts: Vec<Span> = vec![];
-    if let Some(r) = app.rate.filter(|&r| r > 0) {
-        parts.push(Span::raw(format!("{r} tok/s")));
-    }
-    if let Some(a) = app.account_line() {
-        parts.push(Span::raw(a));
-    }
-    let needs = app.needs_count();
-    if needs > 0 {
-        parts.push(Span::styled(format::need_you(needs), Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    match &app.screen {
+        Screen::Setup(_) => parts.push(Span::styled(crate::setup::summary(app), dim())),
+        Screen::Accounts(_) | Screen::Stats(_) => {}
+        _ => {
+            if let Some(r) = format::rate(app.rate) {
+                parts.push(Span::raw(r));
+            }
+            if let Some(a) = app.account_line() {
+                parts.push(Span::raw(a));
+            }
+            let needs = app.needs_count();
+            if needs > 0 {
+                parts.push(Span::styled(format::need_you(needs), Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+            }
+        }
     }
     let room = width.saturating_sub(left.content.width().min(width / 3) + 2);
     let joined = |parts: &[Span<'static>]| {
@@ -252,8 +260,10 @@ fn hint(app: &App) -> String {
         Screen::List if app.rows.is_empty() => "o new · : command · ? keys · q quit".into(),
         Screen::List => "Enter attach · o new · : command · ? keys".into(),
         Screen::Accounts(_) if app.login_under_way() => "c paste the code · x cancel the sign-in · Esc back".into(),
-        Screen::Accounts(_) => "J/K order · Enter first · a add · r rename · dd remove · Esc back".into(),
-        Screen::Stats(_) => "j/k scroll · Esc back".into(),
+        Screen::Accounts(_) => "Esc back".into(),
+        Screen::Stats(_) => crate::stats::HINT.into(),
+        Screen::Setup(_) if app.login_under_way() => "c paste the code · x cancel the sign-in · Esc done".into(),
+        Screen::Setup(_) => crate::setup::HINT.into(),
         Screen::Found(_) => "Enter continue it in dino · Esc back".into(),
         Screen::Archived(_) => "Enter bring it back · Esc back".into(),
     }
@@ -310,62 +320,114 @@ fn new_line(f: &mut Frame, app: &App, form: &NewForm, area: Rect) {
 
 // ---- Accounts ----
 
+const SEL: Color = Color::Indexed(237);
+
+/// A quota bar `w` cells wide, as the app colours them: red at the limit, yellow past 80%.
+fn quota_bar(frac: f32, w: usize) -> Vec<Span<'static>> {
+    let n = ((frac.clamp(0.0, 1.0) * w as f32).round() as usize).min(w);
+    let c = if frac >= 1.0 {
+        Color::Red
+    } else if frac > 0.8 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+    vec![Span::styled("█".repeat(n), Style::new().fg(c)), Span::styled("░".repeat(w - n), Style::new().fg(Color::DarkGray))]
+}
+
+/// Who answers, and in what order the others take over: from the one in use on, then (when the
+/// user chose it) round to the ones before it.
+pub fn in_use_text(list: &[dino_core::ipc::ClaudeAccountInfo], chosen: &[u32]) -> Vec<(String, bool)> {
+    let mut out = vec![];
+    let Some(at) = list.iter().position(|a| a.answering) else {
+        if !list.is_empty() {
+            out.push(("Every account is at its limit: Claude Code waits for the first one back.".to_string(), false));
+        }
+        return out;
+    };
+    let a = &list[at];
+    let picked = chosen.contains(&a.number);
+    let before: &[dino_core::ipc::ClaudeAccountInfo] = if picked { &list[..at] } else { &[] };
+    let after: Vec<String> = list[at + 1..].iter().chain(before.iter()).map(|x| x.number.to_string()).collect();
+    let by = if picked {
+        ", chosen by you"
+    } else if a.number == 1 {
+        ", Claude Code's own sign-in"
+    } else {
+        ", the first that isn't spent"
+    };
+    let then = if after.is_empty() { String::new() } else { format!(" When it's spent, Claude Code falls back to {}.", after.join(", then ")) };
+    out.push((format!("In use: {}{by}.{then}", format::printable(&a.label())), false));
+    if picked && a.number != 1 {
+        out.push(("Enter on 1 goes back to Claude Code's own sign-in.".to_string(), true));
+    }
+    out
+}
+
 fn accounts(f: &mut Frame, app: &App, area: Rect) {
     let Screen::Accounts(v) = &app.screen else { return };
     let width = area.width as usize;
-    let mut lines = vec![TLine::from(vec![Span::styled("Claude accounts", bold()), Span::styled("  in the order Claude Code tries them", dim())]), TLine::raw("")];
-    let Some(info) = &app.accounts else {
-        lines.push(TLine::styled("asking dinod…", dim()));
-        return f.render_widget(Paragraph::new(lines), area);
-    };
-    let name_w = info.accounts.iter().map(|a| a.label().width()).max().unwrap_or(10).clamp(10, 36);
-    let now = format::now();
-    for (i, a) in info.accounts.iter().enumerate() {
-        let state = if a.spent {
-            match a.resets_at.or(a.retry_at) {
-                Some(t) => format!("at its limit, back {}", format::until(t.saturating_sub(now))),
-                None => "at its limit".into(),
-            }
-        } else if a.answering {
-            "active".into()
-        } else {
-            String::new()
-        };
-        let windows = a.windows.iter().map(|w| format!("{} {:.0}%", format::printable(&w.name), w.utilization * 100.0)).collect::<Vec<_>>().join(" · ");
-        let plan = a.plan.as_deref().map(format::printable).unwrap_or_default();
-        let style = if a.spent {
-            Style::new().fg(Color::Red)
-        } else if a.answering {
-            Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)
-        } else {
-            Style::new()
-        };
-        let mut line = TLine::from(vec![
-            Span::raw(format!("  {}  ", a.number)),
-            Span::styled(pad(&format::printable(&a.label()), name_w), if a.answering { bold() } else { Style::new() }),
-            Span::raw("  "),
-            Span::styled(pad(&plan, 6), dim()),
-            Span::styled(pad(&state, 26), style),
-            Span::styled(windows, dim()),
-        ]);
-        if i == v.cursor {
-            let w = line.width();
-            if w < width {
-                line.spans.push(Span::raw(" ".repeat(width - w)));
-            }
-            for s in &mut line.spans {
-                s.style = rev();
-            }
-        }
-        lines.push(line);
+    let grey = Style::new().fg(Color::DarkGray);
+    let keys = if app.unsupported.contains("use") { "J/K fallback order · a add · r rename · dd remove" } else { "Enter use · J/K fallback order · a add · r rename · dd remove" };
+    let mut head = vec![Span::styled("Claude accounts", bold())];
+    let kw = keys.width();
+    if width >= kw + 20 {
+        head.push(Span::raw(" ".repeat(width - kw - 15 - 2)));
+        head.push(Span::styled(keys, grey));
     }
-    // The rows as they are; what's said below them wraps.
-    let rows_h = (lines.len() as u16).min(area.height);
-    f.render_widget(Paragraph::new(lines), Rect { height: rows_h, ..area });
-    let mut lines: Vec<TLine> = vec![];
+    f.render_widget(TLine::from(head), Rect { height: 1, ..area });
+    let Some(info) = &app.accounts else {
+        f.render_widget(TLine::styled("asking dinod…", dim()), Rect { y: area.y + 2, height: 1, ..area });
+        return;
+    };
+    let mut y = area.y + 2;
+    let bottom = area.y + area.height;
+    for (i, a) in info.accounts.iter().enumerate() {
+        if y >= bottom {
+            break;
+        }
+        let on = i == v.cursor;
+        let row = Rect { y, height: 1, ..area };
+        if on {
+            f.buffer_mut().set_style(row, Style::new().bg(SEL));
+        }
+        let (state, ss) = if a.answering {
+            ("in use".to_string(), Style::new().fg(Color::Green))
+        } else if a.spent {
+            (a.resets_at.or(a.retry_at).map_or("at its limit".to_string(), |t| format!("back at {}", format::clock(t))), Style::new().fg(Color::Indexed(214)))
+        } else {
+            ("ready".to_string(), dim())
+        };
+        let mut spans = vec![
+            Span::styled(if on { "▸ " } else { "  " }, Style::new().fg(Color::Cyan)),
+            Span::styled(format!("{:<3}", a.number), dim()),
+            Span::styled(pad(&format::printable(&a.label()), 19), if on { bold() } else { Style::new() }),
+            Span::styled(pad(&a.plan.as_deref().map(format::printable).unwrap_or_default(), 7), dim()),
+            Span::styled(pad(&state, 18), ss),
+        ];
+        // Its 5h and 7d bars, when Anthropic has reported them: never a made-up 0%.
+        let windows: Vec<_> = a.windows.iter().filter(|w| w.name.ends_with('h') || w.name.ends_with('d')).collect();
+        if windows.is_empty() {
+            spans.push(Span::styled("use not reported yet", dim()));
+        }
+        for (k, w) in windows.iter().take(2).enumerate() {
+            if k > 0 {
+                spans.push(Span::raw("      "));
+            }
+            spans.push(Span::styled(format!("{} ", format::printable(&w.name)), dim()));
+            spans.extend(quota_bar(w.utilization, 12));
+            spans.push(Span::raw(format!(" {:>3}%", (w.utilization * 100.0).round() as i64)));
+        }
+        f.render_widget(TLine::from(spans), row);
+        y += 2;
+    }
+    let mut lines: Vec<TLine> = in_use_text(&info.accounts, &app.chosen).into_iter().map(|(t, d)| if d { TLine::styled(t, dim()) } else { TLine::raw(t) }).collect();
     if info.accounts.len() < 2 {
-        lines.push(TLine::raw(""));
         lines.push(TLine::styled("a adds another: Claude Code goes on with the next one when one is at its limit.", dim()));
+    }
+    if let Some(say) = &app.switched {
+        lines.push(TLine::raw(""));
+        lines.push(TLine::styled(say.clone(), Style::new().fg(Color::Yellow)));
     }
     if let Some(e) = &info.error {
         lines.push(TLine::raw(""));
@@ -375,6 +437,7 @@ fn accounts(f: &mut Frame, app: &App, area: Rect) {
         lines.push(TLine::raw(""));
         let say = match l.stage.as_str() {
             "starting" => "Signing in: starting Claude Code's sign-in…".to_string(),
+            "browser" if app.setup.headless => "Signing in: open this link somewhere with a browser, sign in, then press c and paste the code it shows:".to_string(),
             "browser" => {
                 "Signing in: a browser opened on claude.ai where dinod runs. Signing in somewhere else (SSH)? Open this link there, sign in, then press c and paste the code it shows:".to_string()
             }
@@ -391,55 +454,19 @@ fn accounts(f: &mut Frame, app: &App, area: Rect) {
             lines.push(TLine::raw(format::printable(url)));
         }
     }
-    let rest = Rect { y: area.y + rows_h, height: area.height - rows_h, ..area };
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rest);
+    if y < bottom {
+        let rest = Rect { x: area.x + 2, y, height: bottom - y, width: area.width.saturating_sub(2) };
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rest);
+    }
 }
 
 // ---- Usage ----
 
 fn stats(f: &mut Frame, app: &App, area: Rect) {
     let Screen::Stats(v) = &app.screen else { return };
-    let range = match v.range.as_str() {
-        "7d" => "the last 7 days",
-        "30d" => "the last 30 days",
-        _ => "all time",
-    };
-    let mut lines = vec![TLine::from(vec![Span::styled("Usage", bold()), Span::styled(format!("  {range} · :stats 7d|30d|all"), dim())]), TLine::raw("")];
-    let Some(r) = &v.report else {
-        lines.push(TLine::styled("asking dinod…", dim()));
-        return f.render_widget(Paragraph::new(lines), area);
-    };
-    let name_w = (area.width as usize).saturating_sub(2 + 5 * 10).clamp(16, 40);
-    let head = format!("  {}{}{}{}{}{}", pad("", name_w), rpad("input", 10), rpad("output", 10), rpad("cache", 10), rpad("total", 10), rpad("cost", 10));
-    let row = |name: String, t: &dino_core::usage::report::Tokens, cost: Option<f64>| {
-        let c = cost.map_or_else(|| "–".to_string(), |c| format!("${c:.2}"));
-        TLine::raw(format!(
-            "  {}{}{}{}{}{}",
-            pad(&name, name_w),
-            rpad(&format::tokens(t.input), 10),
-            rpad(&format::tokens(t.output), 10),
-            rpad(&format::tokens(t.cache_read + t.cache_write), 10),
-            rpad(&format::tokens(t.total), 10),
-            rpad(&c, 10)
-        ))
-    };
-    let mut table = vec![TLine::styled(head, dim()), TLine::styled("  agents", bold())];
-    for a in &r.agents {
-        table.push(row(format!("  {}", format::printable(&a.agent)), &a.tokens, None));
-    }
-    table.push(TLine::styled("  models", bold()));
-    for m in &r.models {
-        let agents = m.agents.iter().map(|a| format::printable(a)).collect::<Vec<_>>().join(", ");
-        table.push(row(format!("  {} · {agents}", format::short_model(&m.model)), &m.tokens, None));
-    }
-    table.push(TLine::raw(""));
-    table.push(row("total".into(), &r.totals.tokens, r.totals.cost).patch_style(bold()));
-    if r.agents.is_empty() {
-        table.push(TLine::raw(""));
-        table.push(TLine::styled("  nothing used in this range yet", dim()));
-    }
-    lines.extend(table.into_iter().skip(v.scroll.min(r.agents.len() + r.models.len() + 3)));
-    f.render_widget(Paragraph::new(lines), area);
+    let lines = crate::stats::lines(app, v, area.width as usize);
+    let skip = v.scroll.min(lines.len().saturating_sub(1));
+    f.render_widget(Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()), area);
 }
 
 // ---- Found and archived ----

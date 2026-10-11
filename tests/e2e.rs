@@ -1,15 +1,17 @@
-//! dino-tui end to end: a real dinod (`DINO_BIN`, built from the dino tag Cargo.toml pins) in a
+//! dino-tui end to end: a real dinod (`DINO_BIN`, built from the dino commit Cargo.toml pins) in a
 //! temporary HOME and DINO_HOME, with the stand-in Claude in tests/standin, and dino-tui in a
 //! pseudo-terminal whose screen a vt100 parser keeps. It creates a session, attaches, detaches
 //! with the prefix, renames, closes and undoes, and reorders Claude accounts, checking each on
 //! screen and in dinod; and opens the command line's screens (usage, archived, found, settings).
+//! v2's: the first-run setup card, the sidebar beside a session and its keys, collapsing it to the
+//! raw passthrough and back, a narrow terminal's status line, using an account, and usage.
 //!
 //! Without `DINO_BIN` it says so and passes, unless `DINO_TUI_E2E=1` (CI) makes that a failure. No
 //! real account, token, agent or model is involved: the stand-in makes no model calls here
 //! (STANDIN_OFFLINE), and the accounts are made-up tokens in the key file.
 
 use std::io::{Read, Write};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -24,6 +26,8 @@ const ROWS: u16 = 30;
 struct Dinod {
     root: PathBuf,
     child: Child,
+    /// The stand-in Messages API, when the stand-in Claude makes calls (through dinod's proxy).
+    api: Option<(Child, u16)>,
 }
 
 impl Dinod {
@@ -44,32 +48,55 @@ impl Dinod {
             ("TMPDIR".into(), format!("{}/", p("tmp"))),
             // Account tokens in the key file, never a Keychain.
             ("DINO_CLAUDE_ACCOUNT_STORE".into(), "file".into()),
-            ("STANDIN_OFFLINE".into(), "1".into()),
             ("STANDIN_EMAIL".into(), "ada@example.com".into()),
             // The editor :settings opens: one edit, as a person would make it.
             ("EDITOR".into(), "perl -pi -e 's/close_merged = false/close_merged = true/'".into()),
         ]
+        .into_iter()
+        .chain(match &self.api {
+            // A debug dinod sends the stand-in's calls to the stand-in API, never Anthropic's.
+            Some((_, port)) => vec![("DINO_ANTHROPIC_UPSTREAM".to_string(), format!("http://127.0.0.1:{port}"))],
+            None => vec![("STANDIN_OFFLINE".to_string(), "1".to_string())],
+        })
+        .collect()
     }
 
-    fn start(dino: &Path) -> Dinod {
+    /// A dinod of its own for test `tag`; `onboarded`: this machine has been set up; `calls`: the
+    /// stand-in Claude makes model calls, to a stand-in API.
+    fn start(dino: &Path, tag: &str, onboarded: bool, calls: bool) -> Dinod {
         // Short: a Unix socket's path has room for about a hundred bytes.
-        let root = PathBuf::from(format!("/tmp/dtui-e2e-{}", std::process::id()));
+        let root = PathBuf::from(format!("/tmp/dtui-e2e-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["home/.config", "home/work/app", "home/Library", "dino", "claude-config", "codex", "bin", "tmp"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         // A file where launchd's agents would go: nothing the test starts can register with launchd.
         std::fs::write(root.join("home/Library/LaunchAgents"), "").unwrap();
-        let standin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/standin/claude");
-        std::os::unix::fs::symlink(&standin, root.join("bin/claude")).unwrap();
+        let standins = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/standin");
+        std::os::unix::fs::symlink(standins.join("claude"), root.join("bin/claude")).unwrap();
+        // dinod probes every agent it finds (`--version`, its sign-in status) on the login shell's
+        // PATH and in installers' folders (/opt/homebrew/bin…): these are found first, never a
+        // real one. The login shell's PATH as the test's, after macOS's path_helper reordered it.
+        for agent in ["codex", "pi"] {
+            std::os::unix::fs::symlink(standins.join("plain"), root.join("bin").join(agent)).unwrap();
+        }
+        for profile in [".profile", ".zprofile"] {
+            std::fs::write(root.join("home").join(profile), format!("export PATH='{}/bin:/usr/bin:/bin:/usr/sbin:/sbin'\n", root.display())).unwrap();
+        }
         std::fs::write(
             root.join("dino/settings.toml"),
-            "[machine]\nonboarded = true\ncomputer_use = false\ncheck_updates = false\nawake_while_working = false\nkeep_awake = false\n\n[machine.build_cache]\nenabled = false\n\n[policies]\nallowed_agents = [\"claude\"]\n",
+            format!("[machine]\nonboarded = {onboarded}\ncomputer_use = false\ncheck_updates = false\nawake_while_working = false\nkeep_awake = false\n\n[machine.build_cache]\nenabled = false\n\n[policies]\nallowed_agents = [\"claude\"]\n"),
         )
         .unwrap();
+        let api = calls.then(|| {
+            let mut child = Command::new("python3").arg("-I").arg(standins.join("api.py")).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("python3 for the stand-in API");
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut std::io::BufReader::new(child.stdout.take().unwrap()), &mut line).unwrap();
+            (child, line.trim().parse::<u16>().expect("the stand-in API's port"))
+        });
         let token = |w: &str| format!("sk-ant-oat01-STANDIN{w}{}", "a".repeat(60));
         std::fs::write(root.join("dino/keys"), format!("CLAUDE_ACCOUNT_2={}\nCLAUDE_ACCOUNT_3={}\n", token("work"), token("side"))).unwrap();
-        let mut d = Dinod { root, child: Command::new("true").spawn().unwrap() };
+        let mut d = Dinod { root, child: Command::new("true").spawn().unwrap(), api };
         let _ = d.child.wait();
         let mut cmd = Command::new(dino);
         cmd.arg("daemon").env_clear().envs(d.env()).current_dir(d.root.join("home")).stdin(Stdio::null());
@@ -118,6 +145,10 @@ impl Drop for Dinod {
         std::thread::sleep(Duration::from_millis(300));
         unsafe { libc::killpg(self.child.id() as i32, libc::SIGKILL) };
         let _ = self.child.wait();
+        if let Some((api, _)) = &mut self.api {
+            let _ = api.kill();
+            let _ = api.wait();
+        }
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
@@ -164,6 +195,23 @@ impl Tui {
 
     fn text(&self) -> String {
         self.screen.lock().unwrap().screen().contents()
+    }
+
+    /// The terminal resized, as a window is: the program gets SIGWINCH.
+    fn resize(&mut self, cols: u16, rows: u16) {
+        let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+        self.screen.lock().unwrap().screen_mut().set_size(rows, cols);
+        assert_eq!(unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &ws) }, 0);
+    }
+
+    /// Row `y`'s background at column `x`.
+    fn bg(&self, y: u16, x: u16) -> vt100::Color {
+        self.screen.lock().unwrap().screen().cell(y, x).map_or(vt100::Color::Default, |c| c.bgcolor())
+    }
+
+    /// The row whose sidebar part (its first 28 columns) says `what`.
+    fn side_row(&self, what: &str) -> Option<u16> {
+        self.text().lines().position(|l| l.chars().take(28).collect::<String>().contains(what)).map(|y| y as u16)
     }
 
     fn keys(&mut self, b: &[u8]) {
@@ -215,7 +263,7 @@ fn dino() -> Option<PathBuf> {
         Some(p) => Some(PathBuf::from(p)),
         None if std::env::var("DINO_TUI_E2E").is_ok_and(|v| v == "1") => panic!("DINO_TUI_E2E=1 but no DINO_BIN"),
         None => {
-            eprintln!("skipped: set DINO_BIN to a dino built from the pinned tag (see CONTRIBUTING.md)");
+            eprintln!("skipped: set DINO_BIN to a dino built from the pinned commit (see CONTRIBUTING.md)");
             None
         }
     }
@@ -224,7 +272,7 @@ fn dino() -> Option<PathBuf> {
 #[test]
 fn create_attach_detach_rename_close_undo_and_account_order() {
     let Some(dino) = dino() else { return };
-    let d = Dinod::start(&dino);
+    let d = Dinod::start(&dino, "v1", true, false);
     // Name the made-up accounts as the app would, so they read as people's.
     d.req(serde_json::json!({"type": "claude_accounts", "action": "rename", "account": 2, "value": "work"}));
     d.req(serde_json::json!({"type": "claude_accounts", "action": "rename", "account": 3, "value": "side"}));
@@ -296,7 +344,7 @@ fn create_attach_detach_rename_close_undo_and_account_order() {
     tui.keys(b"j");
     tui.keys(b"j");
     tui.keys(b"K");
-    tui.wait_for("side second", |t| t.lines().any(|l| l.trim_start().starts_with("2  side")));
+    tui.wait_for("side second", |t| t.lines().any(|l| l.trim_start_matches([' ', '▸']).starts_with("2  side")));
     let accounts = d.req(serde_json::json!({"type": "claude_accounts", "action": "status"}));
     let names: Vec<String> = accounts["accounts"]["accounts"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(names[1..], ["side".to_string(), "work".to_string()], "{accounts}");
@@ -315,6 +363,134 @@ fn create_attach_detach_rename_close_undo_and_account_order() {
     };
     assert!(status.success());
     assert!(d.sessions().iter().any(|s| s["id"] == id.as_str() && s["exited"] == false), "the agent runs on");
+}
+
+#[test]
+fn first_run_setup_the_sidebar_collapsing_accounts_and_usage() {
+    let Some(dino) = dino() else { return };
+    // A machine not set up yet, and a stand-in Claude that answers through dinod's proxy.
+    let d = Dinod::start(&dino, "v2", false, true);
+    d.req(serde_json::json!({"type": "claude_accounts", "action": "rename", "account": 2, "value": "work"}));
+    d.req(serde_json::json!({"type": "claude_accounts", "action": "rename", "account": 3, "value": "side"}));
+    let cwd = d.root.join("home/work/app").display().to_string();
+    let new = |name: &str| {
+        let id = d.req(serde_json::json!({"type": "new", "launcher": "claude", "args": [], "cwd": cwd, "cols": COLS - 29, "rows": ROWS}))["id"].as_str().unwrap().to_string();
+        d.req(serde_json::json!({"type": "rename", "id": id, "name": name}));
+        id
+    };
+    let (alpha, _beta) = (new("alpha"), new("beta"));
+    let config = d.root.join("home/.config/dino-tui/config.toml");
+    let mut tui = Tui::start(d.env(), &d.root.join("home/work/app"));
+
+    // First run: the setup card, from dinod's answers. Esc marks the machine set up in dinod.
+    tui.wait("dino setup");
+    tui.wait("Claude Code");
+    tui.wait("Default agent");
+    tui.keys(b"\x1b");
+    tui.wait("Enter attach");
+    wait_until("dinod has the machine set up (settings.toml says onboarded = true)", || std::fs::read_to_string(d.root.join("dino/settings.toml")).unwrap_or_default().contains("onboarded = true"));
+
+    // A turn in alpha, for usage to report: asked again if the stand-in wasn't at its prompt yet.
+    let t = Instant::now();
+    let answered = || d.sessions().iter().any(|s| s["id"] == alpha.as_str() && s["output_tokens"].as_u64().unwrap_or(0) > 0);
+    while !answered() {
+        assert!(t.elapsed() < Duration::from_secs(60), "alpha's turn never reached the stand-in API: {:?}", d.sessions());
+        d.req(serde_json::json!({"type": "send_input", "id": alpha, "text": "summarize the repo", "submit": true}));
+        let asked = Instant::now();
+        while !answered() && asked.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    // Attached beside the sidebar: the session from column 29, its row selected.
+    tui.keys(b"/");
+    tui.typed("alpha");
+    tui.keys(b"\r");
+    tui.keys(b"\r");
+    tui.wait("^\\ Tab list");
+    tui.wait_for("the session beside the sidebar", |t| t.lines().any(|l| l.chars().nth(28) == Some('\u{2502}') && l.contains("Stand-in Claude")));
+    assert_eq!(tui.side_row("alpha").map(|y| tui.bg(y, 0)), Some(vt100::Color::Idx(237)));
+    tui.typed("typed beside the sidebar");
+    tui.wait("typed beside the sidebar");
+
+    // The prefix and Tab: the keyboard in the sidebar; j and Enter attach to beta.
+    tui.keys(b"\x1c");
+    tui.keys(b"\t");
+    tui.wait("Esc back");
+    tui.keys(b"j");
+    tui.keys(b"\r");
+    tui.wait_for("beta attached", |t| !t.contains("typed beside the sidebar") && tui.side_row("beta").is_some_and(|y| tui.bg(y, 0) == vt100::Color::Idx(237)));
+
+    // The prefix and s: the sidebar off, the raw passthrough, remembered; again: back, redrawn.
+    tui.keys(b"\x1c");
+    tui.keys(b"s");
+    tui.wait_for("the sidebar gone", |t| !t.contains("^\\ Tab list") && t.contains("Stand-in Claude"));
+    assert!(std::fs::read_to_string(&config).unwrap().contains("sidebar = false"));
+    tui.keys(b"\x1c");
+    tui.keys(b"s");
+    tui.wait("^\\ Tab list");
+    tui.wait("Stand-in Claude");
+    assert!(std::fs::read_to_string(&config).unwrap().contains("sidebar = true"));
+
+    // Under 100 columns: the raw passthrough, and the status line when it's on.
+    tui.keys(b"\x1c");
+    tui.keys(b"d");
+    // The filter alpha was found with goes.
+    tui.keys(b"\x1b");
+    tui.wait("Enter attach");
+    tui.keys(b":");
+    tui.typed("set status_line true");
+    tui.keys(b"\r");
+    tui.wait("status_line is true");
+    tui.keys(b"\r");
+    tui.wait("^\\ Tab list");
+    tui.resize(90, ROWS);
+    tui.wait_for("the status line", |t| t.contains("^\\ d list") && !t.contains("^\\ Tab list"));
+    tui.resize(COLS, ROWS);
+    tui.wait("^\\ Tab list");
+    tui.keys(b"\x1c");
+    tui.keys(b"d");
+    tui.wait("Enter attach");
+
+    // Accounts: Enter uses one. A dinod without `use` says it can't yet, once, never as an error.
+    tui.keys(b"A");
+    tui.wait("side");
+    tui.keys(b"j");
+    tui.keys(b"\r");
+    tui.wait_for("dinod's answer", |t| t.contains("can't switch accounts yet") || t.contains("Switched to"));
+    tui.keys(b"\x1b");
+    tui.wait("Enter attach");
+
+    // Usage: alpha's turn as dinod's report has it; ◂ picks a day.
+    tui.keys(b":");
+    tui.typed("stats 7d");
+    tui.keys(b"\r");
+    tui.wait("Tokens per day");
+    let t = Instant::now();
+    while !tui.text().lines().any(|l| l.trim_start().starts_with("alpha")) {
+        assert!(t.elapsed() < Duration::from_secs(20), "alpha never showed in usage:\n{}", tui.text());
+        tui.keys(b"r");
+        std::thread::sleep(Duration::from_millis(1000));
+    }
+    tui.keys(b"h");
+    tui.wait("\u{25b2}");
+    tui.keys(b"\x1b");
+    tui.keys(b"\x1b");
+    tui.wait("Enter attach");
+
+    // :setup brings the card back any time.
+    tui.keys(b":");
+    tui.typed("setup");
+    tui.keys(b"\r");
+    tui.wait("dino setup");
+    tui.keys(b"\x1b");
+    tui.wait("Enter attach");
+    tui.keys(b"q");
+    let t = Instant::now();
+    while tui.child.try_wait().unwrap().is_none() {
+        assert!(t.elapsed() < Duration::from_secs(5), "dino-tui didn't quit:\n{}", tui.text());
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
