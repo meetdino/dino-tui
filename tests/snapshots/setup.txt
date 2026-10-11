@@ -1,0 +1,30 @@
+
+  dino setup                                                                every row can be left as it is
+  What dino found on this machine. Esc when you're done; :setup brings this back.
+
+  Agents
+    ✓ Claude Code     signed in · ada@example.com
+  ▸ ✓ Codex           installed · not signed in                                     s  sign in
+    ○ 2 more          not installed                                                 Enter  show
+
+  Claude accounts         1 account: ada@example.com (max)                          a  add another
+                          No browser here: adding shows a link and asks for the code.
+
+  Local model servers     Ollama on :11434
+
+  Sync                    off                                                       g  sign in with GitHub
+                          Shows a code to enter at github.com/login/device.
+
+  Default agent           Claude Code  ◂ ▸
+
+  Found on this machine   2 running in other terminals · 14 past ones               Enter  look
+
+  Start at login          off: the first `dino` you run starts dinod                Enter  turn on
+                          Runs `dino service install`: a systemd user service, up at boot.
+
+
+
+
+
+
+j/k move · the key shown on a row · Esc done                               Claude Code ✓ · 1 account · no sync

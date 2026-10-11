@@ -1,0 +1,34 @@
+Usage  last 30 days · Sep 12 – Oct 11                                           7d · 30d · all   r refresh
+
+Tokens  28.7M   286.7k in · 1.1M out · 27.2M cache
+██████████████████████████████████████████ ████████████ ███   ■ conversation 71%  ■ subagents 22%  ■ side 7%
+
+Tokens per day
+  2.3M ┤  ▄           █             ▃     ▇ ▇
+       │  █           █             █     █ █       ▅   ▄                 ■ opus-5-5    17.2M
+       │  █           █       ▃     █     █ █   ▂   █   █   ▁             ■ sonnet-5-5  7.2M
+       │▂ █           █       █     █     █ █   █   █   █   █             ■ haiku-5-5   2.6M
+       │█ █       ▄   █ ▆     █     █     █ █ ▂ █   █   █   █             ■ gpt-5.5-co… 1.1M
+       │█ █   ▄   █ ▇ █ █     █ ▁   █     █ █ █ █ ▁ █   █ ▆ █ ▂           ■ other       573.4k
+       │█ █   █ ▄ █ █ █ █   ▇ █ █   █     █ █ █ █ █ █   █ █ █ █ ▅
+       │█ █   █ █ █ █ █ █   █ █ █ ▇ █     █ █ █ █ █ █   █ █ █ █ █         ◂ ▸ pick a day
+     0 ┼─────────────────────────────────────────────────────────────
+        Sep 12                      Sep 27                   Oct 11
+
+Activity · 13 weeks                         Routes                    requests  errors  limits     cost
+Mon  ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■              Claude · ada@example.com     3,412      12       2   $41.20
+     ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■              Claude · work                  881       3       0   $10.85
+Wed  ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■              OpenRouter                     120       0       0    $0.94
+     ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■              Ollama (local)                  64       0       0        –
+Fri  ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■
+     ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■
+Sun  ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■
+     Less ■ ■ ■ ■ ■  More · 60 active days
+
+Top sessions                                tokens      subagents
+  fix the tab strip                         9.8M        6 · 2.1M
+  website                                   6.1M        2 · 400.0k
+  release notes                             3.3M        –
+
+
+j/k scroll · ◂ ▸ day · 7 / 3 / a range · r refresh · Esc back

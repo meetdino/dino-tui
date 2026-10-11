@@ -1,0 +1,26 @@
+Claude accounts                                Enter use · J/K fallback order · a add · r rename · dd remove
+
+  1  ada@example.com    max    ready             5h █████░░░░░░░  42%      7d █░░░░░░░░░░░  10%
+
+▸ 2  work               max    in use            5h ██░░░░░░░░░░  18%      7d ████░░░░░░░░  31%
+
+  3  spare              pro    at its limit      5h ████████████ 100%      7d █████░░░░░░░  44%
+
+  4  side project       pro    ready             use not reported yet
+
+  In use: work, chosen by you. When it's spent, Claude Code falls back to 3, then 4, then 1.
+  Enter on 1 goes back to Claude Code's own sign-in.
+
+  Switched to spare. Sessions move at their next turn; that first answer has no prompt cache, so it's slower
+  and uses more of spare's limit.
+
+
+
+
+
+
+
+
+
+
+Esc back

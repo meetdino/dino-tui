@@ -22,8 +22,8 @@ with stand-in agents, in a temporary `HOME` and `DINO_HOME`. It needs a `dino` b
 dino tag `Cargo.toml` pins, named by `DINO_BIN`:
 
 ```sh
-git clone --branch v0.1.12 https://github.com/meetdino/dino ../dino
-(cd ../dino && cargo build -p dino)
+git clone https://github.com/meetdino/dino ../dino
+(cd ../dino && git checkout efbc808bf183446d4c5ee367430249c3db2ffb41 && cargo build -p dino)
 DINO_BIN=$PWD/../dino/target/debug/dino cargo test --test e2e
 ```
 

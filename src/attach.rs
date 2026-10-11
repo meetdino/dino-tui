@@ -39,13 +39,19 @@ pub enum Outcome {
     Failed(String),
     /// The terminal went away.
     Hangup,
+    /// The sidebar off (or on): the same session again, the other way.
+    Toggle,
+    /// The sidebar on, with the keyboard in it (the prefix and Tab, from the raw passthrough).
+    SidebarFocus,
+    /// The terminal's width crossed the sidebar's minimum: the same session again, the other way.
+    Remode,
 }
 
 /// What the attach asks of the rest of dino-tui while it runs.
 pub trait Host {
-    /// Something woke the loop (dinod's state, a reply): take it in. With the status line on, its
-    /// text when it changed.
-    fn woke(&mut self) -> Option<String>;
+    /// Something woke the loop (dinod's state, a reply): take it in. With the status line on, what
+    /// it says now.
+    fn woke(&mut self) -> Option<Bar>;
     fn neighbour(&self, id: &str, which: Neighbour) -> Option<String>;
 }
 
@@ -53,18 +59,20 @@ pub struct Opts<'a> {
     pub id: &'a str,
     pub prefix: &'a Prefix,
     pub status_line: bool,
+    /// The sidebar is wanted: once the terminal is wide enough, it's attached that way instead.
+    pub sidebar: bool,
 }
 
-const FOCUS_ON: &[u8] = b"\x1b[?1004h";
-const FOCUS_OFF: &[u8] = b"\x1b[?1004l";
+pub const FOCUS_ON: &[u8] = b"\x1b[?1004h";
+pub const FOCUS_OFF: &[u8] = b"\x1b[?1004l";
 /// What a program may leave on, undone when leaving it: mouse reporting, bracketed paste, focus
 /// reports, the alternate screen, a scroll region, a hidden or reshaped cursor, the kitty keyboard
 /// protocol and xterm's modifyOtherKeys, colours.
 pub const RESET: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?2004l\x1b[?1004l\x1b[?1049l\x1b[r\x1b[?25h\x1b[0 q\x1b[<u\x1b[<u\x1b[<u\x1b[<u\x1b[>4m\x1b[0m";
 /// What `dino attach --fresh` starts from: a clean screen and scrollback, then the session's replay.
-const CLEAR: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
+pub const CLEAR: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
 /// A run of size changes reaches the program as its first and its settled size (see attach_raw).
-const SETTLE: Duration = Duration::from_millis(50);
+pub const SETTLE: Duration = Duration::from_millis(50);
 
 /// How much scrollback the terminal keeps, when it says (as `dino attach` reads it).
 fn scrollback() -> Option<u64> {
@@ -72,7 +80,7 @@ fn scrollback() -> Option<u64> {
 }
 
 /// `wait`: if the session has ended, answer once it's resumed.
-fn attach_on(mut s: UnixStream, id: &str, cols: u16, rows: u16, wait: bool) -> io::Result<UnixStream> {
+pub fn attach_on(mut s: UnixStream, id: &str, cols: u16, rows: u16, wait: bool) -> io::Result<UnixStream> {
     ipc::write_json(&mut s, &Request::Attach { id: id.into(), cols, rows, wait, scrollback: scrollback() })?;
     let (_, payload) = ipc::read_frame(&mut s)?;
     match serde_json::from_slice(&payload).map_err(io::Error::other)? {
@@ -83,7 +91,7 @@ fn attach_on(mut s: UnixStream, id: &str, cols: u16, rows: u16, wait: bool) -> i
 }
 
 /// Whether terminal output draws any text: more than escape sequences, titles and blank lines.
-fn visible(bytes: &[u8]) -> bool {
+pub fn visible(bytes: &[u8]) -> bool {
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
@@ -141,6 +149,13 @@ pub enum Act {
     NeedsYou,
     Picker,
     Command,
+    /// Tab: the keyboard to the sidebar, or back.
+    Sidebar,
+    /// `s`: the sidebar off or on.
+    Toggle,
+    /// Page Up / Page Down: the session's screen scrolled back or forward (with the sidebar).
+    PageUp,
+    PageDown,
 }
 
 /// Finds the prefix in what the terminal sends: its byte, or how the kitty keyboard protocol
@@ -156,7 +171,7 @@ pub struct Keys {
 }
 
 /// A CSI sequence at the start of `b`: its parameters and final byte, and its length.
-fn csi(b: &[u8]) -> Option<(&[u8], u8, usize)> {
+pub fn csi(b: &[u8]) -> Option<(&[u8], u8, usize)> {
     if b.len() < 3 || b[0] != 0x1b || b[1] != b'[' {
         return None;
     }
@@ -166,7 +181,7 @@ fn csi(b: &[u8]) -> Option<(&[u8], u8, usize)> {
 
 /// A key as the kitty protocol or modifyOtherKeys sends it: its code point, modifiers (1 = none),
 /// and whether it's a release.
-fn csi_key(params: &[u8], fin: u8) -> Option<(u32, u32, bool)> {
+pub fn csi_key(params: &[u8], fin: u8) -> Option<(u32, u32, bool)> {
     let p = std::str::from_utf8(params).ok()?;
     match fin {
         b'u' => {
@@ -249,13 +264,17 @@ impl Keys {
                 out.extend_from_slice(&self.raw);
                 continue;
             }
-            let act = match key {
-                Some('d' | 'q') => Act::Detach,
-                Some('n') => Act::Next,
-                Some('p') => Act::Prev,
-                Some('N') => Act::NeedsYou,
-                Some('m') => Act::Picker,
-                Some(':') => Act::Command,
+            let act = match (key, bytes) {
+                (Some('d' | 'q'), _) => Act::Detach,
+                (Some('n'), _) => Act::Next,
+                (Some('p'), _) => Act::Prev,
+                (Some('N'), _) => Act::NeedsYou,
+                (Some('m'), _) => Act::Picker,
+                (Some(':'), _) => Act::Command,
+                (Some('\t'), _) => Act::Sidebar,
+                (Some('s'), _) => Act::Toggle,
+                (_, b"\x1b[5~") => Act::PageUp,
+                (_, b"\x1b[6~") => Act::PageDown,
                 // Anything else after the prefix (Escape among them) is dropped, as tmux does.
                 _ => continue,
             };
@@ -275,10 +294,10 @@ fn utf8_len(b: u8) -> usize {
 }
 
 /// Writes to the terminal unbuffered: each frame as it comes, as `dino attach` does.
-struct Out;
+pub struct Out;
 
 impl Out {
-    fn write(&self, b: &[u8]) -> io::Result<()> {
+    pub fn write(&self, b: &[u8]) -> io::Result<()> {
         let mut f = std::mem::ManuallyDrop::new(unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(1) });
         f.write_all(b)
     }
@@ -286,28 +305,29 @@ impl Out {
 
 /// A reattach under way on a thread of its own, so keys still work (prefix d leaves even while
 /// an ended session waits to be resumed).
-struct Reattach {
-    rx: Receiver<Option<UnixStream>>,
+pub struct Reattach {
+    pub rx: Receiver<Option<UnixStream>>,
     /// The connection it waits on, to cut when leaving.
     waiting: Arc<Mutex<Option<UnixStream>>>,
     cancelled: Arc<AtomicBool>,
 }
 
 impl Reattach {
-    fn start(id: &str, status_line: bool, wait: bool, bell: Arc<UnixStream>) -> Reattach {
+    /// `size`: the session's size for the terminal's.
+    pub fn start(id: &str, size: fn((u16, u16)) -> (u16, u16), wait: bool, bell: Arc<UnixStream>) -> Reattach {
         let (tx, rx): (Sender<Option<UnixStream>>, _) = channel();
         let waiting = Arc::new(Mutex::new(None));
         let cancelled = Arc::new(AtomicBool::new(false));
         let (id, w, c) = (id.to_string(), waiting.clone(), cancelled.clone());
         std::thread::spawn(move || {
-            let got = reattach(&id, status_line, wait, &w, &c);
+            let got = reattach(&id, size, wait, &w, &c);
             let _ = tx.send(got);
             let _ = (&*bell).write(&[1]);
         });
         Reattach { rx, waiting, cancelled }
     }
 
-    fn cancel(&self) {
+    pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Relaxed);
         if let Some(s) = self.waiting.lock().unwrap().take() {
             let _ = s.shutdown(std::net::Shutdown::Both);
@@ -317,14 +337,14 @@ impl Reattach {
 
 /// attach_raw's reattach loop: every 100 ms; dinod saying no means the session is gone; not
 /// reachable for 5 s, gone too. `wait`: the session ended, so this blocks until it's resumed.
-fn reattach(id: &str, status_line: bool, wait: bool, waiting: &Mutex<Option<UnixStream>>, cancelled: &AtomicBool) -> Option<UnixStream> {
+fn reattach(id: &str, size: fn((u16, u16)) -> (u16, u16), wait: bool, waiting: &Mutex<Option<UnixStream>>, cancelled: &AtomicBool) -> Option<UnixStream> {
     let mut started = Instant::now();
     loop {
         std::thread::sleep(Duration::from_millis(100));
         if cancelled.load(Ordering::Relaxed) {
             return None;
         }
-        let (cols, rows) = session_size(crossterm::terminal::size().unwrap_or((80, 24)), status_line);
+        let (cols, rows) = size(crossterm::terminal::size().unwrap_or((80, 24)));
         let tried = Instant::now();
         let attempt = UnixStream::connect(conn::socket()).and_then(|s| {
             *waiting.lock().unwrap() = s.try_clone().ok();
@@ -349,11 +369,58 @@ fn session_size(size: (u16, u16), status_line: bool) -> (u16, u16) {
     (size.0, if status_line { size.1.saturating_sub(1).max(1) } else { size.1 })
 }
 
+fn size_plain(size: (u16, u16)) -> (u16, u16) {
+    session_size(size, false)
+}
+
+fn size_bar(size: (u16, u16)) -> (u16, u16) {
+    session_size(size, true)
+}
+
+/// What the status line says: parts on the left (text and SGR), and on the right.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Bar {
+    pub left: Vec<(String, &'static str)>,
+    pub right: Vec<(String, &'static str)>,
+}
+
+/// The status line's ground.
+const BAR_BG: &str = "48;5;236";
+
+impl Bar {
+    /// The line `cols` wide: the left as far as it fits, the right only when it fits whole.
+    pub fn draw(&self, cols: usize) -> String {
+        use unicode_width::UnicodeWidthStr;
+        let rw: usize = self.right.iter().map(|(t, _)| t.width()).sum();
+        let lw: usize = self.left.iter().map(|(t, _)| t.width()).sum();
+        let show_right = rw > 0 && lw.min(cols / 2) + rw + 2 <= cols;
+        let room = if show_right { cols - rw - 1 } else { cols };
+        let mut out = String::new();
+        let mut used = 0;
+        for (t, sgr) in &self.left {
+            let t = crate::ui::fit(t, room.saturating_sub(used));
+            if t.is_empty() {
+                break;
+            }
+            used += t.width();
+            out.push_str(&format!("\x1b[0;{BAR_BG}{}{sgr}m{t}", if sgr.is_empty() { "" } else { ";" }));
+        }
+        let gap = cols.saturating_sub(used + if show_right { rw + 1 } else { 0 });
+        out.push_str(&format!("\x1b[0;{BAR_BG}m{}", " ".repeat(gap)));
+        if show_right {
+            for (t, sgr) in &self.right {
+                out.push_str(&format!("\x1b[0;{BAR_BG}{}{sgr}m{t}", if sgr.is_empty() { "" } else { ";" }));
+            }
+            out.push_str(&format!("\x1b[0;{BAR_BG}m "));
+        }
+        out
+    }
+}
+
 /// The status line at the bottom row, outside the session's scroll region; the cursor and the
 /// session's own saved cursor stay where they were (DECSC/DECRC around it).
-fn bar(rows: u16, cols: u16, text: &str) -> Vec<u8> {
-    let text = crate::ui::fit(text, cols as usize);
-    format!("\x1b7\x1b[1;{}r\x1b[{rows};1H\x1b[0m\x1b[7m\x1b[2K{text}\x1b[K\x1b[0m\x1b8", rows.saturating_sub(1).max(1)).into_bytes()
+fn bar(rows: u16, cols: u16, b: &Bar) -> Vec<u8> {
+    format!("\x1b7\x1b[1;{}r\x1b[{rows};1H\x1b[0m{}\x1b[0m\x1b8", rows.saturating_sub(1).max(1), b.draw(cols as usize)).into_bytes()
 }
 
 /// Output that clears the screen or resets the scroll region, after which the bar is drawn again.
@@ -376,7 +443,7 @@ pub fn run(opts: &Opts, wake: RawFd, bell: Arc<UnixStream>, host: &mut dyn Host)
     let _ = out.write(&[b"\x1b[?2004l\x1b[?1049l\x1b[?25h", CLEAR, FOCUS_ON].concat());
     let mut status = host.woke();
     if opts.status_line {
-        let _ = out.write(&bar(size.1, size.0, status.as_deref().unwrap_or("")));
+        let _ = out.write(&bar(size.1, size.0, &status.clone().unwrap_or_default()));
     }
     let outcome = relay(opts, stream, size, wake, bell, host, &mut status);
     // Leave the terminal as the list wants it: whatever the program turned on, off.
@@ -385,7 +452,8 @@ pub fn run(opts: &Opts, wake: RawFd, bell: Arc<UnixStream>, host: &mut dyn Host)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn relay(opts: &Opts, stream: UnixStream, mut size: (u16, u16), wake: RawFd, bell: Arc<UnixStream>, host: &mut dyn Host, status: &mut Option<String>) -> Outcome {
+fn relay(opts: &Opts, stream: UnixStream, mut size: (u16, u16), wake: RawFd, bell: Arc<UnixStream>, host: &mut dyn Host, status: &mut Option<Bar>) -> Outcome {
+    let resize_of: fn((u16, u16)) -> (u16, u16) = if opts.status_line { size_bar } else { size_plain };
     let out = Out;
     let mut writer = match stream.try_clone() {
         Ok(w) => w,
@@ -446,10 +514,19 @@ fn relay(opts: &Opts, stream: UnixStream, mut size: (u16, u16), wake: RawFd, bel
                 }
                 if let Some(act) = act {
                     let to = |w| host.neighbour(opts.id, w);
+                    let wide = crossterm::terminal::size().is_ok_and(|s| s.0 >= crate::sidebar::MIN_COLS);
                     match act {
                         Act::Detach => return leave(&reattaching, Outcome::Detach),
                         Act::Picker => return leave(&reattaching, Outcome::Picker),
                         Act::Command => return leave(&reattaching, Outcome::Command),
+                        // Too narrow for the sidebar: the bell says so.
+                        Act::Toggle if wide => return leave(&reattaching, Outcome::Toggle),
+                        Act::Sidebar if wide => return leave(&reattaching, Outcome::SidebarFocus),
+                        Act::Toggle | Act::Sidebar | Act::PageUp | Act::PageDown => {
+                            if !matches!(act, Act::PageUp | Act::PageDown) {
+                                let _ = out.write(b"\x07");
+                            }
+                        }
                         Act::Next | Act::Prev | Act::NeedsYou => {
                             let which = match act {
                                 Act::Next => Neighbour::Next,
@@ -476,12 +553,12 @@ fn relay(opts: &Opts, stream: UnixStream, mut size: (u16, u16), wake: RawFd, bel
         }
         if ready[1] {
             drain(wake);
-            if let Some(text) = host.woke()
+            if let Some(b) = host.woke()
                 && opts.status_line
-                && status.as_deref() != Some(&text)
+                && status.as_ref() != Some(&b)
             {
-                let _ = out.write(&bar(size.1, size.0, &text));
-                *status = Some(text);
+                let _ = out.write(&bar(size.1, size.0, &b));
+                *status = Some(b);
             }
             if let Ok(now) = crossterm::terminal::size()
                 && now != size
@@ -497,11 +574,15 @@ fn relay(opts: &Opts, stream: UnixStream, mut size: (u16, u16), wake: RawFd, bel
         }
         if resize {
             size = crossterm::terminal::size().unwrap_or(size);
+            // Wide enough for the sidebar now: attached that way instead.
+            if opts.sidebar && size.0 >= crate::sidebar::MIN_COLS {
+                return leave(&reattaching, Outcome::Remode);
+            }
             sent_size = Instant::now();
             let (c, r) = session_size(size, opts.status_line);
             let _ = ipc::write_frame(&mut writer, ipc::RESIZE, &ipc::resize_payload(c, r));
             if opts.status_line {
-                let _ = out.write(&bar(size.1, size.0, status.as_deref().unwrap_or("")));
+                let _ = out.write(&bar(size.1, size.0, &status.clone().unwrap_or_default()));
             }
         }
         if ready[1]
@@ -543,7 +624,7 @@ fn relay(opts: &Opts, stream: UnixStream, mut size: (u16, u16), wake: RawFd, bel
                                 shown.extend_from_slice(FOCUS_ON);
                             }
                             if opts.status_line && wipes_bar(&shown) {
-                                shown.extend_from_slice(&bar(size.1, size.0, status.as_deref().unwrap_or("")));
+                                shown.extend_from_slice(&bar(size.1, size.0, &status.clone().unwrap_or_default()));
                             }
                             if out.write(&shown).is_err() {
                                 return leave(&reattaching, Outcome::Hangup);
@@ -564,14 +645,14 @@ fn relay(opts: &Opts, stream: UnixStream, mut size: (u16, u16), wake: RawFd, bel
                             .as_bytes(),
                         );
                         reader = None;
-                        reattaching = Some(Reattach::start(opts.id, opts.status_line, true, bell.clone()));
+                        reattaching = Some(Reattach::start(opts.id, resize_of, true, bell.clone()));
                         break;
                     }
                     Ok(_) => {}
                     Err(_) => {
                         // The socket dropped but the session may live on (seen across sleep/wake).
                         reader = None;
-                        reattaching = Some(Reattach::start(opts.id, opts.status_line, ended, bell.clone()));
+                        reattaching = Some(Reattach::start(opts.id, resize_of, ended, bell.clone()));
                         break;
                     }
                 }
@@ -583,7 +664,7 @@ fn relay(opts: &Opts, stream: UnixStream, mut size: (u16, u16), wake: RawFd, bel
     }
 }
 
-fn drain(fd: RawFd) {
+pub fn drain(fd: RawFd) {
     let mut buf = [0u8; 256];
     while unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
 }
@@ -660,9 +741,23 @@ mod tests {
 
     #[test]
     fn the_bar_keeps_the_cursor() {
-        let b = String::from_utf8(bar(24, 10, "claude-1 working and more")).unwrap();
+        let line = Bar { left: vec![("claude-1 working and more".into(), "1")], right: vec![("^\\ d list".into(), "90")] };
+        let b = String::from_utf8(bar(24, 10, &line)).unwrap();
         assert!(b.starts_with("\x1b7\x1b[1;23r\x1b[24;1H") && b.ends_with("\x1b8"), "{b:?}");
-        assert!(b.contains("claude-1 …"));
+        // Too narrow for the right part: the left, cut.
+        assert!(b.contains("claude-1 …") && !b.contains("list"), "{b:?}");
+        let wide = line.draw(60);
+        assert!(wide.contains("^\\ d list") && wide.contains("\x1b[0;48;5;236;1mclaude-1 working and more"), "{wide:?}");
         assert!(wipes_bar(b"x\x1b[2Jy") && !wipes_bar(b"\x1b[2K"));
+    }
+
+    #[test]
+    fn the_sidebar_keys_after_the_prefix() {
+        let mut k = Keys::default();
+        assert_eq!(feed(&mut k, b"\x1c\t"), (vec![], Some(Act::Sidebar)));
+        assert_eq!(feed(&mut k, b"\x1cs"), (vec![], Some(Act::Toggle)));
+        assert_eq!(feed(&mut k, b"\x1c\x1b[5~"), (vec![], Some(Act::PageUp)));
+        // Tab as the kitty protocol sends it.
+        assert_eq!(feed(&mut k, b"\x1b[92;5u\x1b[9u"), (vec![], Some(Act::Sidebar)));
     }
 }

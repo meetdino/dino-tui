@@ -4,13 +4,18 @@ mod app;
 mod attach;
 mod config;
 mod conn;
+mod emulate;
 mod format;
 mod input;
 mod live;
 mod order;
+mod screen;
 mod settings;
+mod setup;
+mod sidebar;
 #[cfg(test)]
 mod snapshots;
+mod stats;
 mod ui;
 mod wake;
 
@@ -26,7 +31,8 @@ use dino_core::status::Status;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use app::{App, Event, Line, Overlay, PickFor, Want};
+use app::{App, Event, Job, Line, Overlay, PickFor, Want};
+use attach::Bar;
 
 const HELP: &str = "dino-tui: a minimal, keyboard-only terminal client for dinod.
 
@@ -59,7 +65,7 @@ fn main() {
     }
 }
 
-type Term = Terminal<CrosstermBackend<io::Stdout>>;
+pub type Term = Terminal<CrosstermBackend<io::Stdout>>;
 
 /// The terminal as the list wants it: raw, the alternate screen, pastes as one.
 fn enter() -> io::Result<()> {
@@ -104,10 +110,62 @@ fn run() -> anyhow::Result<()> {
 
 /// A blank screen, drawn whole at the next draw. Not ratatui's `clear`, which asks the terminal
 /// where its cursor is and waits for the answer.
-fn fresh(term: &mut Term) -> io::Result<()> {
+pub fn fresh(term: &mut Term) -> io::Result<()> {
     execute!(io::stdout(), terminal::Clear(terminal::ClearType::All), cursor::MoveTo(0, 0))?;
     *term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     Ok(())
+}
+
+/// Requests (and jobs) go out on threads of their own; each answer wakes the loop.
+pub fn dispatch(app: &mut App, waker: &wake::Waker<Event>) {
+    for (tag, req) in app.outbox.drain(..) {
+        let w = waker.clone();
+        std::thread::spawn(move || w.send(Event::Reply(tag, conn::request(&req))));
+    }
+    for (tag, req) in app.outbox_raw.drain(..) {
+        let w = waker.clone();
+        std::thread::spawn(move || w.send(Event::Raw(tag, conn::raw(&req))));
+    }
+    for (tag, job) in app.jobs.drain(..) {
+        let w = waker.clone();
+        std::thread::spawn(move || w.send(Event::Job(tag, run_job(job))));
+    }
+}
+
+/// A job: one setting changed in dinod's settings (read, changed, written back as plain JSON, so
+/// nothing else in them changes), or `dino service`.
+fn run_job(job: Job) -> Result<String, String> {
+    match job {
+        Job::Setting(path, value) => {
+            let got = conn::raw(&serde_json::json!({"type": "settings"})).map_err(|e| format!("dinod: {e}"))?;
+            if let Some(e) = conn::raw_error(&got) {
+                return Err(format!("dinod: {e}"));
+            }
+            let mut settings = got["settings"].clone();
+            let (last, parents) = path.split_last().ok_or("no setting")?;
+            let mut at = &mut settings;
+            for p in parents {
+                at = at.as_object_mut().ok_or("dinod's settings aren't a table")?.entry(p.to_string()).or_insert(serde_json::json!({}));
+            }
+            at.as_object_mut().ok_or("dinod's settings aren't a table")?.insert(last.to_string(), value);
+            let said = conn::raw(&serde_json::json!({"type": "set_settings", "settings": settings})).map_err(|e| format!("dinod: {e}"))?;
+            match conn::raw_error(&said) {
+                Some(e) => Err(format!("dinod: {e}")),
+                None => Ok(String::new()),
+            }
+        }
+        Job::Service(what) => {
+            let dino = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("dino")).find(|f| f.is_file())).ok_or("dino isn't on your PATH")?;
+            let out = std::process::Command::new(dino).args(["service", what]).stdin(std::process::Stdio::null()).output().map_err(|e| e.to_string())?;
+            let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
+            if out.status.success() {
+                Ok(text(&out.stdout))
+            } else {
+                let e = text(&out.stderr);
+                Err(if e.is_empty() { text(&out.stdout) } else { e })
+            }
+        }
+    }
 }
 
 /// `v` (`0.1.12`, `0.1.12-dev`) is older than `min`.
@@ -119,11 +177,7 @@ fn version_below(v: &str, min: (u32, u32, u32)) -> bool {
 
 fn event_loop(term: &mut Term, app: &mut App, waker: &wake::Waker<Event>, wake: &mut wake::Wake<Event>) -> anyhow::Result<()> {
     loop {
-        // Requests go out on threads of their own; each answer wakes the loop.
-        for (tag, req) in app.outbox.drain(..) {
-            let w = waker.clone();
-            std::thread::spawn(move || w.send(Event::Reply(tag, conn::request(&req))));
-        }
+        dispatch(app, waker);
         match app.want.take() {
             Some(Want::Quit) => return Ok(()),
             Some(Want::Attach(id)) => {
@@ -155,38 +209,52 @@ fn event_loop(term: &mut Term, app: &mut App, waker: &wake::Waker<Event>, wake: 
         let ready = wake::poll(&[0, wake.fd()], timeout)?;
         if ready[0] {
             // Everything the terminal sent, as crossterm reads it.
-            while event::poll(Duration::ZERO)? {
-                app.on_term(event::read()?);
-            }
+            term_events(app)?;
         }
         if ready[1] {
             wake.drain();
             while let Ok(ev) = wake.rx.try_recv() {
                 app.on_event(ev);
             }
-            // A size change: ratatui redraws at the new size.
+            // A size change: ratatui redraws at the new size. crossterm takes its own word of it
+            // now, while no key waits (see `term_events`).
             if terminal::size().ok() != Some(app.size) {
                 app.dirty = true;
+                term_events(app)?;
             }
         }
         app.tick(Instant::now());
     }
 }
 
+/// What the terminal sent, as crossterm reads it. crossterm waits on the terminal and on its own
+/// word of size changes (SIGWINCH) together; given both, it answers with the size change and the
+/// terminal's readiness is gone until more comes, so a key typed then waited for the next one. So
+/// it's also asked as soon as the size changed, and after an attach (which reads the terminal
+/// itself, leaving crossterm only the size changes meanwhile).
+fn term_events(app: &mut App) -> io::Result<()> {
+    while event::poll(Duration::ZERO)? {
+        app.on_term(event::read()?);
+    }
+    Ok(())
+}
+
 /// What the attach asks of the app while it runs.
 struct Host<'a> {
     app: &'a mut App,
     wake: &'a mut wake::Wake<Event>,
+    waker: &'a wake::Waker<Event>,
     id: String,
 }
 
 impl attach::Host for Host<'_> {
-    fn woke(&mut self) -> Option<String> {
+    fn woke(&mut self) -> Option<Bar> {
         while let Ok(ev) = self.wake.rx.try_recv() {
             self.app.on_event(ev);
         }
         // Requests made meanwhile (none from keys: those go to the session) still go out.
-        self.app.config.status_line.then(|| status_text(self.app, &self.id))
+        dispatch(self.app, self.waker);
+        self.app.config.status_line.then(|| status_bar(self.app, &self.id))
     }
 
     fn neighbour(&self, id: &str, which: app::Neighbour) -> Option<String> {
@@ -194,46 +262,87 @@ impl attach::Host for Host<'_> {
     }
 }
 
-/// The status line while attached: the session, what it's doing, the way back.
-fn status_text(app: &App, id: &str) -> String {
-    let Some(s) = app.sessions.iter().find(|s| s.id == id) else { return format!(" {id}") };
-    let st = match Status::of(s) {
-        Status::NeedsYou => "needs you",
-        Status::Working => "working",
-        Status::Done => "done",
-        Status::Idle => "idle",
-        Status::Ended => "ended",
-        Status::Exited => "exited",
+/// The status line while attached without the sidebar: the session and its mark, what needs you
+/// elsewhere, the live rate, the Claude account in use; the way back on the right.
+fn status_bar(app: &App, id: &str) -> Bar {
+    let caret = app.config.prefix().caret();
+    let mut b = Bar::default();
+    let Some(s) = app.sessions.iter().find(|s| s.id == id) else {
+        b.left.push((format!(" {id}"), ""));
+        return b;
     };
+    let (mark, style) = sidebar::mark(s);
+    let sgr = match (mark, style.fg) {
+        ("!", _) => "38;5;214;1",
+        (_, Some(ratatui::style::Color::Green)) => "32",
+        (_, Some(ratatui::style::Color::Blue)) => "34",
+        (_, Some(ratatui::style::Color::Red)) => "31",
+        _ => "",
+    };
+    b.left.push((" ".into(), ""));
+    b.left.push((mark.into(), sgr));
+    b.left.push((" ".into(), ""));
+    b.left.push((format::name(s), "1"));
     let others = app.needs_count().saturating_sub((Status::of(s) == Status::NeedsYou) as usize);
-    let needs = if others > 0 { format!(" · {} elsewhere", format::need_you(others)) } else { String::new() };
-    let info = [Some(format::printable(format::agent(s))), format::model(s), format::mode(s)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-    let (name, prefix) = (format::name(s), app.config.prefix().label);
-    format!(" {name} · {info} · {st}{needs}   {prefix} d list · {prefix} n/p next/prev")
+    if others > 0 {
+        b.left.push(("  ".into(), ""));
+        b.left.push(("!".into(), "38;5;214;1"));
+        b.left.push((format!(" {}", format::need_you(others)), ""));
+    }
+    if let Some(r) = format::rate(app.rate) {
+        b.left.push((format!("   {r}"), ""));
+    }
+    if let Some(a) = app.account_line() {
+        b.left.push((format!("  {a}"), "2"));
+    }
+    let next = if others > 0 { format!("{caret} N next !") } else { format!("{caret} n next") };
+    b.right.push((format!("{caret} d list · {next}"), "90"));
+    b
 }
 
 fn attach(term: &mut Term, app: &mut App, waker: &wake::Waker<Event>, wake: &mut wake::Wake<Event>, mut id: String) -> anyhow::Result<()> {
     let prefix = app.config.prefix();
-    let status_line = app.config.status_line;
     let bell = waker_bell(waker);
+    let mut focus_sidebar = false;
     loop {
         term.backend_mut().flush()?;
-        let outcome = {
-            let mut host = Host { app, wake, id: id.clone() };
-            attach::run(&attach::Opts { id: &id, prefix: &prefix, status_line }, host.wake.fd(), bell.clone(), &mut host)
+        let wide = terminal::size().is_ok_and(|s| s.0 >= sidebar::MIN_COLS);
+        app.side.attached = Some(id.clone());
+        app.side.cursor = sidebar::Cursor::Attached;
+        let outcome = if app.config.sidebar && wide {
+            app.side.focus = std::mem::take(&mut focus_sidebar);
+            emulate::run(term, app, waker, wake, &id)
+        } else {
+            let status_line = app.config.status_line;
+            let mut host = Host { app, wake, waker, id: id.clone() };
+            attach::run(&attach::Opts { id: &id, prefix: &prefix, status_line, sidebar: host.app.config.sidebar }, host.wake.fd(), bell.clone(), &mut host)
         };
-        // Back on the list's screen, drawn whole again.
-        let _ = execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste, cursor::Hide);
-        fresh(term)?;
-        app.dirty = true;
-        app.selected = Some(id.clone());
-        app.rebuild();
         match outcome {
+            // The sidebar off or on: remembered for the next attach and the next start.
+            attach::Outcome::Toggle | attach::Outcome::SidebarFocus => {
+                focus_sidebar = outcome == attach::Outcome::SidebarFocus;
+                app.config.sidebar = focus_sidebar || !app.config.sidebar;
+                if let Err(e) = app.config.save() {
+                    app.flash_err(format!("the sidebar's choice isn't saved: {e}"));
+                }
+                continue;
+            }
+            attach::Outcome::Remode => continue,
             attach::Outcome::Switch(next) => {
                 id = next;
                 continue;
             }
-            attach::Outcome::Detach => {}
+            _ => {}
+        }
+        // Back on the list's screen, drawn whole again; the size changes crossterm saw meanwhile taken.
+        let _ = execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste, cursor::Hide);
+        fresh(term)?;
+        term_events(app)?;
+        app.dirty = true;
+        app.selected = Some(id.clone());
+        app.rebuild();
+        app.back_from_setup_shell();
+        match outcome {
             attach::Outcome::Picker => {
                 app.selected = Some(id.clone());
                 app.rebuild();
@@ -246,6 +355,7 @@ fn attach(term: &mut Term, app: &mut App, waker: &wake::Waker<Event>, wake: &mut
             attach::Outcome::Gone => app.flash(format!("session {id} is gone")),
             attach::Outcome::Failed(e) => app.flash_err(format!("can't attach to {id}: {}", format::printable(&e))),
             attach::Outcome::Hangup => app.want = Some(Want::Quit),
+            _ => {}
         }
         return Ok(());
     }

@@ -1,0 +1,36 @@
+                            │
+ dino-app  /srv/dino-app    │ > the tab strip overflows past 12 tabs; make tabs shrink instead
+  ● fix the tab strip       │
+  ! pricing page            │ ● I'll look at how the strip lays out its tabs.
+     Allow npm run e2e?     │
+  ● release notes           │ ● Read(src/tabs/strip.ts)
+    docs                    │   ⎿  Read 214 lines
+                            │
+ dino-app ⎇ tabs-compact    │ ● Update(src/tabs/strip.ts)
+  ○ tabs: compact mode      │        84 -    const min = 120;
+  ● flaky e2e            ✕  │        84 +    const min = compact ? 44 : 120;
+                            │
+ website  /srv/website      │ ✻ Testing… (14s · ↓ 1.4k tokens · esc to interrupt)
+  ● landing copy            │
+    pricing table           │ ╭──────────────────────────────────╮
+                            │ │ >
+ notes  /srv/notes          │
+    shell                   │
+                            │
+                            │
+                            │
+ ────────────────────────── │
+ Usage                    ▾ │
+ work                in use │
+ 5h ███░░░░░░░░░░░  18%     │
+ 7d ████░░░░░░░░░░  31%     │
+ ● ada@example.com    ready │
+ ● spare       at its limit │
+ Open sessions    42.9k tok │
+ Free models 1.1k tok $0.00 │
+ 1.2k out · 16.4k in tok/s  │
+ ────────────────────────── │
+ claude · opus-5-5 · edits  │
+ ⎇ main · 41.8k tok · 2m    │
+ ^\ Tab list  ^\ s hide     │
+                            │

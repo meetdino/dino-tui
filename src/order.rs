@@ -87,9 +87,127 @@ pub fn groups(sessions: &[SessionInfo], tree: &[RepoInfo], filter: &str) -> Vec<
     out.into_iter().map(|(g, _)| g).collect()
 }
 
+/// A group of the sidebar: a place sessions run (a repo's main checkout, one of its worktrees, a
+/// folder, an SSH host) or, grouped by state, a status.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Section {
+    /// The repo's (or folder's) name, or the status.
+    pub name: String,
+    /// What follows it: where it is (`~/work/app`), or for a worktree its branch.
+    pub detail: Detail,
+    pub sessions: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Detail {
+    Path(String),
+    Branch(String),
+    Count(usize),
+}
+
+/// The sidebar's sections when grouped by project, as the app's sidebar files sessions: each repo's
+/// main checkout, then its worktrees (by branch), repos by name; then folders outside any repo,
+/// then SSH hosts. In each, pinned sessions first, then as dinod numbered them: rows stay put while
+/// their status changes.
+pub fn places(sessions: &[SessionInfo], tree: &[RepoInfo]) -> Vec<Section> {
+    // (sort key, section)
+    let mut out: Vec<((u8, String, u8, String), Section)> = vec![];
+    for (i, s) in sessions.iter().enumerate() {
+        let (key, name, detail) = if let Some(h) = &s.host {
+            ((3, h.to_lowercase(), 0, s.cwd.clone()), format::printable(&format!("{h}:{}", base(&s.cwd))), Detail::Path(format::printable(&format!("{h}:{}", s.cwd))))
+        } else if let Some(r) = repo_of(&s.cwd, tree) {
+            let inside = |p: &str| !p.is_empty() && (s.cwd == p || s.cwd.strip_prefix(p).is_some_and(|rest| rest.starts_with('/')));
+            let wt = r.worktrees.iter().filter(|w| w.path != r.path && inside(&w.path)).max_by_key(|w| w.path.len());
+            match wt {
+                Some(w) => {
+                    let branch = w.branch.clone().unwrap_or_else(|| base(&w.path).to_string());
+                    ((1, r.name.to_lowercase(), 1, branch.clone()), format::printable(&r.name), Detail::Branch(format::printable(&branch)))
+                }
+                None => ((1, r.name.to_lowercase(), 0, r.path.clone()), format::printable(&r.name), Detail::Path(format::short_path(&r.path))),
+            }
+        } else {
+            ((2, base(&s.cwd).to_lowercase(), 0, s.cwd.clone()), format::printable(base(&s.cwd)), Detail::Path(format::short_path(&s.cwd)))
+        };
+        match out.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, sec)) => sec.sessions.push(i),
+            None => out.push((key, Section { name, detail, sessions: vec![i] })),
+        }
+    }
+    out.sort_by(|(a, _), (b, _)| a.cmp(b));
+    out.into_iter()
+        .map(|(_, mut sec)| {
+            sec.sessions.sort_by_key(|&i| (!sessions[i].pinned, id_order(&sessions[i].id)));
+            sec
+        })
+        .collect()
+}
+
+/// The sidebar's sections when grouped by state, as the app's: Needs you, Working, Done, Idle (an
+/// ended session is idle there), each only when it has sessions.
+pub fn states(sessions: &[SessionInfo]) -> Vec<Section> {
+    let of = |s: &SessionInfo| match Status::of(s) {
+        Status::NeedsYou => 0,
+        Status::Working => 1,
+        Status::Done => 2,
+        _ => 3,
+    };
+    ["Needs you", "Working", "Done", "Idle"]
+        .iter()
+        .enumerate()
+        .filter_map(|(k, name)| {
+            let mut ids: Vec<usize> = (0..sessions.len()).filter(|&i| of(&sessions[i]) == k).collect();
+            ids.sort_by_key(|&i| (!sessions[i].pinned, id_order(&sessions[i].id)));
+            (!ids.is_empty()).then(|| Section { name: name.to_string(), detail: Detail::Count(ids.len()), sessions: ids })
+        })
+        .collect()
+}
+
+/// The branch a session's folder has out, when dinod's tree knows it.
+pub fn branch_of(s: &SessionInfo, tree: &[RepoInfo]) -> Option<String> {
+    let r = repo_of(&s.cwd, tree)?;
+    let inside = |p: &str| !p.is_empty() && (s.cwd == p || s.cwd.strip_prefix(p).is_some_and(|rest| rest.starts_with('/')));
+    r.worktrees.iter().filter(|w| inside(&w.path)).max_by_key(|w| w.path.len()).and_then(|w| w.branch.clone())
+}
+
+/// The project a session is in, short: its repo's name, else its folder's.
+pub fn project_of(s: &SessionInfo, tree: &[RepoInfo]) -> String {
+    group_of(s, tree).1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn places_split_worktrees_and_keep_their_order() {
+        let tree: Vec<RepoInfo> = serde_json::from_value(serde_json::json!([
+            {"path": "/r/app", "name": "app", "worktrees": [{"path": "/r/app", "branch": "main"}, {"path": "/w/app-tabs", "branch": "tabs-compact"}]},
+            {"path": "/r/site", "name": "site", "worktrees": []},
+        ]))
+        .unwrap();
+        let sessions = [
+            s("1", "/r/site", Some("needs:x"), false),
+            s("2", "/w/app-tabs", None, false),
+            s("3", "/notes", None, false),
+            s("4", "/r/app/src", Some("working"), false),
+            s("5", "/r/app", None, true),
+            s("10", "/r/app", None, false),
+        ];
+        let p = places(&sessions, &tree);
+        let heads: Vec<(&str, &Detail)> = p.iter().map(|g| (g.name.as_str(), &g.detail)).collect();
+        assert_eq!(
+            heads,
+            [("app", &Detail::Path("/r/app".into())), ("app", &Detail::Branch("tabs-compact".into())), ("site", &Detail::Path("/r/site".into())), ("notes", &Detail::Path("/notes".into()))]
+        );
+        // Pinned first, then by number, whatever their status.
+        let ids: Vec<&str> = p[0].sessions.iter().map(|&i| sessions[i].id.as_str()).collect();
+        assert_eq!(ids, ["5", "4", "10"]);
+        assert_eq!(branch_of(&sessions[1], &tree).as_deref(), Some("tabs-compact"));
+        assert_eq!(branch_of(&sessions[3], &tree).as_deref(), Some("main"));
+        let st = states(&sessions);
+        assert_eq!(st.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["Needs you", "Working", "Idle"]);
+        assert_eq!(st[2].detail, Detail::Count(4));
+    }
 
     fn s(id: &str, cwd: &str, activity: Option<&str>, pinned: bool) -> SessionInfo {
         serde_json::from_value(serde_json::json!({
