@@ -69,15 +69,14 @@ fn rate(waker: Waker<Event>) {
         let mut c = connect(&waker, &mut lost);
         let mut seen: Option<u32> = None;
         loop {
-            // Untyped: the pinned dino-core (0.1.11) has no `OutputRate`; dinod 0.1.12 answers it.
-            match c.raw(&serde_json::json!({"type": "output_rate", "seen": seen})) {
-                Ok(v) if v["type"] == "output_rate" => {
-                    let n = v["tokens_per_second"].as_u64().unwrap_or(0) as u32;
-                    seen = Some(n);
-                    waker.send(Event::Rate(Some(n)));
+            match c.request(&Request::OutputRate { seen }) {
+                Ok(Response::OutputRate { tokens_per_second }) => {
+                    seen = Some(tokens_per_second);
+                    waker.send(Event::Rate(Some(tokens_per_second)));
                 }
-                // An older dinod: the rate stays hidden, and nothing asks again.
-                Ok(v) if conn::raw_error(&v).is_some_and(|m| conn::unknown_request(&m)) => {
+                // A dinod from before `OutputRate` (0.1.11): the rate stays hidden, and nothing
+                // asks again.
+                Ok(Response::Error { message }) if conn::unknown_request(&message) => {
                     waker.send(Event::Rate(None));
                     return;
                 }

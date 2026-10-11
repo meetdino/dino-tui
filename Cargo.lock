@@ -192,8 +192,8 @@ dependencies = [
 
 [[package]]
 name = "dino-core"
-version = "0.1.11"
-source = "git+https://github.com/meetdino/dino?tag=v0.1.11#5c1a211943d66228b6c6aaacd4f5fdde965d5c4a"
+version = "0.1.12"
+source = "git+https://github.com/meetdino/dino?tag=v0.1.12#544552fb8fd54974dda51e2e6027f5977af0351a"
 dependencies = [
  "anyhow",
  "libc",
