@@ -1,0 +1,50 @@
+name: DCO
+
+# Every commit in a pull request is signed off by its author (see CONTRIBUTING.md).
+# Runs on pull requests from forks too: it only reads the commits, and needs no secrets.
+on: pull_request
+
+permissions: {}
+
+concurrency:
+  group: dco-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dco:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Check Signed-off-by
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          # Dependabot's updates carry no sign-off; who opened the pull request can't be forged.
+          OPENER: ${{ github.event.pull_request.user.login }}
+        run: |
+          if [ "$OPENER" = "dependabot[bot]" ]; then
+            echo "Dependabot's update: no sign-off needed"
+            exit 0
+          fi
+          missing=0
+          for c in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            email=$(git log -1 --format=%ae "$c")
+            # The address as plain text, not a pattern: bots' addresses have brackets.
+            if ! git log -1 --format=%B "$c" | grep -i '^Signed-off-by: ' | grep -qiF "<$email>"; then
+              echo "::error::$(git log -1 --format='%h %s' "$c") has no Signed-off-by for $email"
+              missing=1
+            fi
+          done
+          if [ "$missing" = 1 ]; then
+            echo "Sign off each commit with git commit -s (git rebase --signoff for existing ones). See CONTRIBUTING.md."
+            exit 1
+          fi
+          echo "every commit is signed off"

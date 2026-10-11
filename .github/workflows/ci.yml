@@ -1,0 +1,90 @@
+name: CI
+
+# What every pull request has to pass: formatting, clippy with warnings as errors, and the tests on
+# macOS and Linux (x86_64 and arm64), the end-to-end test included, against a real dinod built from
+# the dino tag Cargo.toml pins.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # The dino whose dinod the end-to-end test runs: the tag dino-core is pinned to in Cargo.toml.
+  DINO_TAG: v0.1.11
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rust-toolchain.toml picks the version.
+      - run: rustup toolchain install --no-self-update
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # dino-core links the system SQLite (rusqlite), though dino-tui never uses it.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libsqlite3-dev
+      - run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The dinod the end-to-end test drives: dino at the pinned tag, a debug build (only a debug
+      # dinod lets a test point its proxy at a stand-in API; this test makes no model calls).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: meetdino/dino
+          ref: ${{ env.DINO_TAG }}
+          path: dino-src
+          persist-credentials: false
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libsqlite3-dev
+      - run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            . -> target
+            dino-src -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build dinod (dino ${{ env.DINO_TAG }})
+        run: cargo build --manifest-path dino-src/Cargo.toml -p dino --locked
+      - run: cargo build --all-targets --locked
+      - name: Tests, the end-to-end one against that dinod
+        env:
+          DINO_TUI_E2E: "1"
+        run: DINO_BIN="$PWD/dino-src/target/debug/dino" cargo test --locked
