@@ -1577,6 +1577,26 @@ mod tests {
     }
 
     #[test]
+    fn folders_complete_from_dinod_and_the_disk() {
+        let dir = std::env::temp_dir().join(format!("dino-tui-complete-{}", std::process::id()));
+        for d in ["alpha", "alps", "beta", ".hidden"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        let base = dir.display().to_string();
+        // Several: as far as they agree, then the choices.
+        assert!(matches!(complete_folder(&format!("{base}/al"), &[], &[]), Completion::Line(l) if l.ends_with("/alp")));
+        assert!(matches!(complete_folder(&format!("{base}/alp"), &[], &[]), Completion::Choices(c) if c.len() == 2));
+        // One: whole, as a folder to go on in.
+        assert!(matches!(complete_folder(&format!("{base}/b"), &[], &[]), Completion::Line(l) if l.ends_with("/beta/")));
+        // Hidden ones only when asked for.
+        assert!(matches!(complete_folder(&format!("{base}/"), &[], &[]), Completion::Choices(c) if c.len() == 3));
+        // Where sessions run counts too, though it isn't on this disk.
+        let s = session("1", "/srv/somewhere/app", None);
+        assert!(matches!(complete_folder("/srv/some", &[], &[s]), Completion::Line(l) if l == "/srv/somewhere/app"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn an_older_dinod_hides_rather_than_errs() {
         let mut a = app();
         a.on_event(Event::Reply(Tag::Stats, Ok(Response::Error { message: "bad request: unknown variant `stats`".into() })));
