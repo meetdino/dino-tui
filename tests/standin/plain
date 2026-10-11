@@ -1,0 +1,10 @@
+#!/bin/sh
+# A stand-in for an agent dino-tui's tests must never run for real (Pi, Codex): on the test PATH,
+# ahead of the folders dinod also looks in (/opt/homebrew/bin, /usr/local/bin), so dinod's setup
+# probes (`--version`, `login status`) and a sign-in typed into a test shell run this instead.
+# Installed, not signed in, and nothing else.
+case "$1" in
+--version | -V | version) echo "$(basename "$0") 0.0.1-standin" ;;
+login) echo "Not logged in"; exit 1 ;;
+*) echo "stand-in $(basename "$0"): nothing real runs in dino-tui's tests" ;;
+esac

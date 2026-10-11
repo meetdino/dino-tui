@@ -13,12 +13,15 @@ use dino_core::found::FoundSession;
 use dino_core::ipc::{ArchivedInfo, ClaudeAccountInfo, ClaudeAccountsInfo, Deletion, LauncherInfo, QuotaInfo, RepoInfo, Request, Response, SessionInfo};
 use dino_core::status::Status;
 use dino_core::usage::{Range, Report};
+use serde_json::Value;
 
 use crate::config::Config;
 use crate::conn;
 use crate::format;
 use crate::input::Input;
 use crate::order::{self, Group};
+use crate::setup::{Setup, SetupView};
+use crate::sidebar::Side;
 
 /// What wakes the loop besides a key. One at a time through a channel, so the size of the big
 /// variant costs nothing worth boxing it for.
@@ -28,9 +31,32 @@ pub enum Event {
     State(Box<Response>),
     /// dinod went away; the long-polls wait for it to come back.
     Lost,
-    /// Output tokens per second across sessions; `None`: this dinod doesn't say.
-    Rate(Option<u32>),
+    /// Tokens per second across sessions; `None`: this dinod doesn't say.
+    Rate(Option<Rate>),
     Reply(Tag, io::Result<Response>),
+    /// A request sent as plain JSON, and dinod's answer as it came: for what dino-core's types
+    /// would lose (a newer dinod's fields, as `chosen` on an account).
+    Raw(Tag, io::Result<Value>),
+    /// A job done (a setting changed, `dino service` run): what to say, or why it didn't.
+    Job(Tag, Result<String, String>),
+}
+
+/// Tokens per second across every session, over dinod's last 10 seconds: what agents write, and
+/// what they send that the prompt cache didn't hold (`None` from a dinod older than that).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rate {
+    pub out: u32,
+    pub input: Option<u32>,
+}
+
+/// What the loop runs on a thread of its own, beyond one request.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Job {
+    /// One setting changed in dinod's settings document, read and written back as plain JSON, so
+    /// nothing else in it changes.
+    Setting(Vec<&'static str>, Value),
+    /// `dino service <what>` (Linux): whether dinod runs as a systemd user service.
+    Service(&'static str),
 }
 
 /// What an answer is for.
@@ -61,6 +87,24 @@ pub enum Tag {
     Found,
     Archived,
     Unarchived(String),
+    /// dinod's settings, as plain JSON: whether this machine is set up (first run, `:setup`).
+    Settings,
+    AgentSetup,
+    /// An agent's install or sign-in, in a shell to attach to.
+    AgentAction {
+        agent: String,
+        action: String,
+    },
+    Providers,
+    /// The sync's state, and what to say once it's back.
+    Sync(String),
+    /// How many sessions `Found` has, for the setup card.
+    FoundCount,
+    /// `ClaudeAccounts { use }`: Claude Code's calls go to this account.
+    Use(u32, String),
+    /// A setting changed (`Job::Setting`): what to say.
+    Setting(String),
+    Service,
 }
 
 /// What only the loop can do.
@@ -79,6 +123,7 @@ pub enum Row {
 
 pub enum Screen {
     List,
+    Setup(SetupView),
     Accounts(AccountsView),
     Stats(StatsView),
     Found(PickList<FoundSession>),
@@ -94,6 +139,8 @@ pub struct StatsView {
     pub range: Range,
     pub report: Option<Box<Report>>,
     pub scroll: usize,
+    /// The day picked in the tokens-per-day chart (◂ ▸), counted from the chart's last.
+    pub day: Option<usize>,
 }
 
 pub struct PickList<T> {
@@ -218,8 +265,8 @@ pub struct App {
     tree_known: Option<String>,
     tree_cwds: Vec<String>,
     tree_asked: bool,
-    /// Output tokens per second; `None` until dinod says (or when it can't).
-    pub rate: Option<u32>,
+    /// Tokens per second; `None` until dinod says (or when it can't).
+    pub rate: Option<Rate>,
     pub connected: bool,
     pub got_state: bool,
     pub groups: Vec<Group>,
@@ -242,6 +289,9 @@ pub struct App {
     next_login_look: Option<Instant>,
     needs: HashSet<String>,
     pub outbox: Vec<(Tag, Request)>,
+    /// Requests sent as plain JSON, and jobs; the loop sends and runs them.
+    pub outbox_raw: Vec<(Tag, Value)>,
+    pub jobs: Vec<(Tag, Job)>,
     pub want: Option<Want>,
     pub dirty: bool,
     /// Ring the terminal's bell: a session started needing you.
@@ -251,6 +301,14 @@ pub struct App {
     pub size: (u16, u16),
     /// What this dinod refused as a request it doesn't know.
     pub unsupported: HashSet<&'static str>,
+    /// The sidebar beside an attached session.
+    pub side: Side,
+    /// What the setup card shows, as dinod last said.
+    pub setup: Setup,
+    /// The accounts the user chose (`ClaudeAccounts { use }`), when dinod says (`chosen`).
+    pub chosen: Vec<u32>,
+    /// Said once after switching accounts, while the accounts screen stays open.
+    pub switched: Option<String>,
 }
 
 impl App {
@@ -289,12 +347,18 @@ impl App {
             next_login_look: None,
             needs: HashSet::new(),
             outbox: vec![],
+            outbox_raw: vec![],
+            jobs: vec![],
             want: None,
             dirty: true,
             bell: false,
             height: 20,
             size: (80, 24),
             unsupported: HashSet::new(),
+            side: Side::default(),
+            setup: Setup::default(),
+            chosen: vec![],
+            switched: None,
         }
     }
 
@@ -302,10 +366,26 @@ impl App {
     pub fn start(&mut self) {
         self.send(Tag::Launchers, Request::Launchers);
         self.send(Tag::Accounts(String::new()), accounts("status"));
+        // Whether this machine was set up: the setup card comes up if it wasn't.
+        self.send_raw(Tag::Settings, serde_json::json!({"type": "settings"}));
     }
 
-    fn send(&mut self, tag: Tag, req: Request) {
+    pub fn send(&mut self, tag: Tag, req: Request) {
+        // The accounts as plain JSON: `chosen` is newer than the pinned dino-core.
+        if matches!(tag, Tag::Accounts(_) | Tag::Use(..))
+            && let Ok(v) = serde_json::to_value(&req)
+        {
+            return self.send_raw(tag, v);
+        }
         self.outbox.push((tag, req));
+    }
+
+    pub fn send_raw(&mut self, tag: Tag, req: Value) {
+        self.outbox_raw.push((tag, req));
+    }
+
+    pub fn job(&mut self, tag: Tag, job: Job) {
+        self.jobs.push((tag, job));
     }
 
     pub fn flash(&mut self, text: impl Into<String>) {
@@ -334,6 +414,68 @@ impl App {
                 }
             }
             Event::Reply(tag, r) => self.on_reply(tag, r),
+            Event::Raw(tag, r) => self.on_raw(tag, r),
+            Event::Job(tag, r) => self.on_job(tag, r),
+        }
+    }
+
+    fn on_raw(&mut self, tag: Tag, r: io::Result<Value>) {
+        self.dirty = true;
+        let v = match r {
+            Ok(v) => v,
+            Err(e) => return self.flash_err(format!("dinod: {e}")),
+        };
+        match tag {
+            Tag::Settings => self.on_settings(v),
+            Tag::Use(n, name) => match conn::raw_error(&v) {
+                // A dinod from before `use`: it says so, never an error.
+                Some(m) if m.starts_with("unknown action") || conn::unknown_request(&m) => {
+                    self.unsupported.insert("use");
+                    self.flash(format!("this dinod ({}) can't switch accounts yet: update dino", self.dinod));
+                }
+                _ => {
+                    // Expected, not verified: a switch moves the conversation to another
+                    // organization's prompt cache. Said once.
+                    self.switched = Some(if n == 1 {
+                        "Back to Claude Code's own sign-in. Sessions move at their next turn; that first answer has no prompt cache, so it's slower.".to_string()
+                    } else {
+                        format!("Switched to {name}. Sessions move at their next turn; that first answer has no prompt cache, so it's slower and uses more of {name}'s limit.")
+                    });
+                    self.on_accounts_raw(v, String::new());
+                }
+            },
+            Tag::Accounts(say) => self.on_accounts_raw(v, say),
+            other => match serde_json::from_value::<Response>(v) {
+                Ok(resp) => self.on_reply(other, Ok(resp)),
+                Err(e) => self.flash_err(format!("dinod answered in a way dino-tui can't read: {e}")),
+            },
+        }
+    }
+
+    /// The accounts as dinod sent them: the typed list, and `chosen` where a newer dinod says it.
+    fn on_accounts_raw(&mut self, v: Value, say: String) {
+        if let Some(list) = v["accounts"]["accounts"].as_array() {
+            self.chosen = list.iter().filter(|a| a["chosen"] == true).filter_map(|a| a["number"].as_u64().map(|n| n as u32)).collect();
+        }
+        match serde_json::from_value::<Response>(v) {
+            Ok(resp) => self.on_reply(Tag::Accounts(say), Ok(resp)),
+            Err(e) => self.flash_err(format!("dinod's accounts don't read: {e}")),
+        }
+    }
+
+    fn on_job(&mut self, tag: Tag, r: Result<String, String>) {
+        self.dirty = true;
+        match (tag, r) {
+            (Tag::Service, r) => self.on_service(r),
+            (Tag::Setting(say), Ok(_)) => {
+                if !say.is_empty() {
+                    self.flash(say);
+                }
+                // What the card shows comes from the settings as they are now.
+                self.send_raw(Tag::Settings, serde_json::json!({"type": "settings"}));
+            }
+            (_, Err(e)) => self.flash_err(format::printable(&e)),
+            _ => {}
         }
     }
 
@@ -378,7 +520,14 @@ impl App {
             if conn::unknown_request(message) {
                 let what = tag_feature(&tag);
                 self.unsupported.insert(what);
+                // The setup card asks for several at once: it says which it can't show, on its rows.
+                if matches!(tag, Tag::AgentSetup | Tag::Providers | Tag::Sync(_) | Tag::FoundCount) {
+                    return;
+                }
                 return self.flash(format!("dinod {} can't {what} yet: update dino", self.dinod));
+            }
+            if matches!(tag, Tag::Sync(_)) {
+                self.setup.sync_look = None;
             }
             if matches!(tag, Tag::Accounts(_)) {
                 self.next_login_look = None;
@@ -442,6 +591,27 @@ impl App {
                 self.screen = Screen::List;
                 self.flash(format!("{name} is back"));
             }
+            (Tag::AgentSetup, Response::AgentSetup { agents }) => {
+                if let Some(say) = self.setup.on_agents(agents) {
+                    self.flash(say);
+                }
+            }
+            (Tag::AgentAction { agent, action }, Response::Created { id }) => {
+                // Its own command runs in a new shell: the user answers it there, then comes back.
+                self.setup.away = Some((agent, action));
+                self.want = Some(Want::Attach(id));
+            }
+            (Tag::Providers, Response::Providers { providers }) => self.setup.providers = Some(providers),
+            (Tag::Sync(say), Response::Sync { status }) => {
+                self.setup.on_sync(status);
+                if !say.is_empty() {
+                    self.flash(say);
+                }
+            }
+            (Tag::FoundCount, Response::Found { sessions, more, .. }) => {
+                let running = sessions.iter().filter(|s| s.pid.is_some()).count();
+                self.setup.found = Some((running, sessions.len() - running, more));
+            }
             (tag, resp) => self.flash_err(format!("dinod answered {tag:?} with {}", kind(&resp))),
         }
     }
@@ -461,7 +631,14 @@ impl App {
         if let Some(l) = login {
             let now = (l.id, l.stage.clone());
             match l.stage.as_str() {
-                "starting" | "browser" | "checking" => self.next_login_look = Some(Instant::now() + LOGIN_LOOK),
+                "starting" | "browser" | "checking" => {
+                    self.next_login_look = Some(Instant::now() + LOGIN_LOOK);
+                    // No browser here: once claude.ai's link shows, the code it ends on is asked for.
+                    let fresh = was.as_ref().is_none_or(|(id, stage)| *id != l.id || stage != "browser");
+                    if self.setup.headless && l.stage == "browser" && l.url.is_some() && fresh && matches!(self.line, Line::Normal) {
+                        self.line = Line::Ask(Ask::LoginCode, Input::default());
+                    }
+                }
                 // How it ended, once.
                 "added" if was.as_ref() != Some(&now) && was.is_some() => {
                     let n = l.account.unwrap_or(0);
@@ -610,10 +787,8 @@ impl App {
     /// spinner's next frame, a sign-in to look at again. Nothing: sleep until dinod or a key.
     pub fn deadline(&self) -> Option<Instant> {
         let spin = self.spinning().then(|| self.last_spin + SPIN);
-        [self.message.as_ref().map(|m| m.until), self.undo.as_ref().map(|u| u.until), spin, self.next_login_look.filter(|_| matches!(self.screen, Screen::Accounts(_)))]
-            .into_iter()
-            .flatten()
-            .min()
+        let login = self.next_login_look.filter(|_| matches!(self.screen, Screen::Accounts(_) | Screen::Setup(_)));
+        [self.message.as_ref().map(|m| m.until), self.undo.as_ref().map(|u| u.until), spin, login, self.setup_deadline()].into_iter().flatten().min()
     }
 
     pub fn tick(&mut self, now: Instant) {
@@ -630,10 +805,11 @@ impl App {
             self.last_spin = now;
             self.dirty = true;
         }
-        if matches!(self.screen, Screen::Accounts(_)) && self.next_login_look.is_some_and(|t| t <= now) {
+        if matches!(self.screen, Screen::Accounts(_) | Screen::Setup(_)) && self.next_login_look.is_some_and(|t| t <= now) {
             self.next_login_look = None;
             self.send(Tag::Accounts(String::new()), accounts("status"));
         }
+        self.setup_tick(now);
     }
 
     // ---- Keys ----
@@ -674,6 +850,7 @@ impl App {
         }
         match self.screen {
             Screen::List => self.list_key(k),
+            Screen::Setup(_) => self.setup_key(k),
             Screen::Accounts(_) => self.accounts_key(k),
             Screen::Stats(_) => self.stats_key(k),
             Screen::Found(_) => self.found_key(k),
@@ -1038,7 +1215,10 @@ impl App {
         let added: Vec<u32> = list.iter().map(|a| a.number).filter(|&n| n != 1).collect();
         let reorder = |app: &mut App, order: Vec<u32>, say: String| app.send(Tag::Accounts(say), Request::ClaudeAccounts { action: "order".into(), value: None, account: None, order });
         match k.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::List,
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.switched = None;
+                self.screen = Screen::List;
+            }
             KeyCode::Char('j') | KeyCode::Down => v.cursor = (at + 1).min(list.len().saturating_sub(1)),
             KeyCode::Char('k') | KeyCode::Up => v.cursor = at.saturating_sub(1),
             KeyCode::Char(c @ ('J' | 'K')) => {
@@ -1057,16 +1237,21 @@ impl App {
             }
             KeyCode::Enter => {
                 let Some(a) = chosen else { return };
-                if a.number == 1 {
-                    return self.flash("Account 1 is Claude Code's own sign-in: it's always tried first");
+                // A dinod from before `use` said so once: it isn't asked again.
+                if self.unsupported.contains("use") {
+                    return self.flash(format!("this dinod ({}) can't switch accounts yet: update dino", self.dinod));
                 }
-                let mut order = added.clone();
-                order.retain(|&n| n != a.number);
-                order.insert(0, a.number);
-                v.cursor = list.iter().position(|x| x.number != 1).unwrap_or(0);
-                reorder(self, order, format!("{} is tried first now, after Claude Code's own", format::printable(&a.label())));
+                if a.answering && (a.number == 1 || self.chosen.contains(&a.number)) {
+                    return self.flash(format!("{} is in use already", format::printable(&a.label())));
+                }
+                let name = format::printable(&a.label());
+                self.switched = None;
+                self.send(Tag::Use(a.number, name), Request::ClaudeAccounts { action: "use".into(), value: None, account: Some(a.number), order: vec![] });
             }
-            KeyCode::Char('a') => self.send(Tag::Accounts("signing in: a browser opens where dinod runs".into()), accounts("login")),
+            KeyCode::Char('a') => {
+                let say = if self.setup.headless { "signing in: open the link below somewhere with a browser" } else { "signing in: a browser opens where dinod runs" };
+                self.send(Tag::Accounts(say.into()), accounts("login"));
+            }
             KeyCode::Char('c') if self.login_under_way() => self.line = Line::Ask(Ask::LoginCode, Input::default()),
             KeyCode::Char('x') if self.login_under_way() => self.send(Tag::Accounts("sign-in cancelled".into()), accounts("login_cancel")),
             KeyCode::Char('r') => {
@@ -1094,10 +1279,26 @@ impl App {
 
     fn stats_key(&mut self, k: KeyEvent) {
         let Screen::Stats(v) = &mut self.screen else { return };
+        let days = v.report.as_ref().map_or(0, |r| r.days.len());
+        let range = |app: &mut App, r: Range| {
+            app.screen = Screen::Stats(StatsView { range: r, report: None, scroll: 0, day: None });
+            app.send(Tag::Stats, Request::Stats { range: r });
+        };
         match k.code {
+            KeyCode::Esc if v.day.is_some() => v.day = None,
             KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::List,
             KeyCode::Char('j') | KeyCode::Down => v.scroll += 1,
             KeyCode::Char('k') | KeyCode::Up => v.scroll = v.scroll.saturating_sub(1),
+            // ◂ ▸: a day of the chart, counted back from the last.
+            KeyCode::Char('h') | KeyCode::Left if days > 0 => v.day = Some(v.day.map_or(0, |d| (d + 1).min(days - 1))),
+            KeyCode::Char('l') | KeyCode::Right => v.day = v.day.and_then(|d| d.checked_sub(1)),
+            KeyCode::Char('7') => range(self, Range::Week),
+            KeyCode::Char('3') => range(self, Range::Month),
+            KeyCode::Char('a') => range(self, Range::All),
+            KeyCode::Char('r') => {
+                let r = v.range;
+                range(self, r);
+            }
             KeyCode::Char(':') => self.line = Line::Ask(Ask::Command, Input::default()),
             _ => {}
         }
@@ -1165,10 +1366,11 @@ impl App {
                         None => return self.flash_err(format!("{}: :stats takes 7d, 30d or all", format::printable(r))),
                     },
                 };
-                self.screen = Screen::Stats(StatsView { range, report: None, scroll: 0 });
+                self.screen = Screen::Stats(StatsView { range, report: None, scroll: 0, day: None });
                 self.send(Tag::Stats, Request::Stats { range });
             }
             "accounts" => self.open_accounts(),
+            "setup" => self.open_setup(),
             "settings" => self.want = Some(Want::Settings),
             "set" => match words.as_slice() {
                 [_] => self.flash(self.config.show()),
@@ -1179,10 +1381,10 @@ impl App {
                     },
                     Err(e) => self.flash_err(e),
                 },
-                _ => self.flash_err(":set <option> <value>: prefix, status_line or confirm_delete"),
+                _ => self.flash_err(":set <option> <value>: prefix, status_line, confirm_delete, sidebar or group_by"),
             },
             "help" | "h" => self.overlay = Some(Overlay::Help),
-            _ => self.flash_err(format!("no command :{}  (:new :found :archived :stats :accounts :settings :set :q)", format::printable(cmd))),
+            _ => self.flash_err(format!("no command :{}  (:new :found :archived :stats :accounts :setup :settings :set :q)", format::printable(cmd))),
         }
     }
 
@@ -1250,7 +1452,13 @@ fn tag_feature(tag: &Tag) -> &'static str {
         Tag::Archived => "list archived sessions",
         Tag::Tree => "group sessions by repo",
         Tag::Launchers => "list agents",
-        Tag::Done(_) => "do that",
+        Tag::Done(_) | Tag::Setting(_) | Tag::Service => "do that",
+        Tag::Settings => "show its settings",
+        Tag::AgentSetup | Tag::AgentAction { .. } => "set up agents",
+        Tag::Providers => "list model servers",
+        Tag::Sync(_) => "sync settings",
+        Tag::FoundCount => "find sessions outside dino",
+        Tag::Use(..) => "switch accounts",
     }
 }
 
@@ -1322,7 +1530,7 @@ pub enum Completion {
     None,
 }
 
-const COMMANDS: &[&str] = &["new", "found", "archived", "stats", "accounts", "settings", "set", "q"];
+const COMMANDS: &[&str] = &["new", "found", "archived", "stats", "accounts", "setup", "settings", "set", "q"];
 
 /// Tab on the command line: the command, then its arguments.
 pub fn complete_command(line: &str, app: &App) -> Completion {
@@ -1335,7 +1543,8 @@ pub fn complete_command(line: &str, app: &App) -> Completion {
         ["new", _, _] => vec!["--worktree".into(), "--".into()],
         ["stats"] => ["7d", "30d", "all"].iter().map(|s| s.to_string()).collect(),
         ["set"] => crate::config::OPTIONS.iter().map(|s| s.to_string()).collect(),
-        ["set", "status_line" | "confirm_delete"] => vec!["true".into(), "false".into()],
+        ["set", "status_line" | "confirm_delete" | "sidebar"] => vec!["true".into(), "false".into()],
+        ["set", "group_by"] => vec!["project".into(), "state".into()],
         _ => vec![],
     };
     let prefix = |l: String| if before.is_empty() { l } else { format!("{} {l}", before.join(" ")) };
@@ -1430,11 +1639,14 @@ pub const HELP: &[(&str, &str)] = &[
     ("x  u", "close, u undoes it"),
     ("dd", "delete"),
     ("A", "Claude accounts"),
-    (":", "command line (:new :found :archived :stats :settings :set :q)"),
+    (":", "command line (:new :stats :setup :set …, Tab completes)"),
     ("q", "quit; agents keep running"),
     ("prefix d / q", "attached: back to the list"),
     ("prefix n / p / N", "attached: next, previous, next that needs you"),
     ("prefix m / :", "attached: picker, command line"),
+    ("prefix Tab", "attached: the keyboard to the sidebar (j/k, Enter, Esc)"),
+    ("prefix s", "attached: the sidebar off or on"),
+    ("prefix PgUp PgDn", "attached with the sidebar: scroll the session back"),
     ("prefix prefix", "attached: send the prefix key itself"),
 ];
 
@@ -1571,7 +1783,7 @@ mod tests {
     fn commands_complete() {
         let a = app();
         assert!(matches!(complete_command("ac", &a), Completion::Line(l) if l == "accounts "));
-        assert!(matches!(complete_command("s", &a), Completion::Choices(c) if c == ["stats", "settings", "set"]));
+        assert!(matches!(complete_command("s", &a), Completion::Choices(c) if c == ["stats", "setup", "settings", "set"]));
         assert!(matches!(complete_command("stats 3", &a), Completion::Line(l) if l == "stats 30d "));
         assert!(matches!(complete_command("set st", &a), Completion::Line(l) if l == "set status_line "));
     }

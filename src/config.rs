@@ -1,5 +1,5 @@
 //! dino-tui's own config, the only thing it keeps: `~/.config/dino-tui/config.toml`
-//! (`$XDG_CONFIG_HOME/dino-tui` when that's set). Three options; `:set` changes them.
+//! (`$XDG_CONFIG_HOME/dino-tui` when that's set). Five options; `:set` changes them.
 
 use std::path::PathBuf;
 
@@ -14,15 +14,20 @@ pub struct Config {
     pub status_line: bool,
     /// `dd` asks y/N before deleting a session.
     pub confirm_delete: bool,
+    /// The sidebar beside an attached session, when the terminal has room (100 columns or more).
+    /// The prefix and `s` turns it off and on, and changes this.
+    pub sidebar: bool,
+    /// How the sidebar groups sessions: `project` (where they run) or `state` (what they're doing).
+    pub group_by: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { prefix: "C-\\".into(), status_line: false, confirm_delete: true }
+        Config { prefix: "C-\\".into(), status_line: false, confirm_delete: true, sidebar: true, group_by: "project".into() }
     }
 }
 
-pub const OPTIONS: &[&str] = &["prefix", "status_line", "confirm_delete"];
+pub const OPTIONS: &[&str] = &["prefix", "status_line", "confirm_delete", "sidebar", "group_by"];
 
 impl Config {
     pub fn path() -> PathBuf {
@@ -58,6 +63,10 @@ impl Config {
         Prefix::parse(&self.prefix).unwrap_or_default()
     }
 
+    pub fn by_state(&self) -> bool {
+        self.group_by == "state"
+    }
+
     /// `:set <option> <value>`: what it says back, or why not.
     pub fn set(&mut self, option: &str, value: &str) -> Result<String, String> {
         match option {
@@ -66,25 +75,32 @@ impl Config {
                 self.prefix = p.label.clone();
                 Ok(format!("prefix is {}", p.label))
             }
-            "status_line" | "confirm_delete" => {
+            "status_line" | "confirm_delete" | "sidebar" => {
                 let on = match value {
                     "true" | "on" | "yes" | "1" => true,
                     "false" | "off" | "no" | "0" => false,
                     _ => return Err(format!("{option} is true or false")),
                 };
-                if option == "status_line" {
-                    self.status_line = on;
-                } else {
-                    self.confirm_delete = on;
+                match option {
+                    "status_line" => self.status_line = on,
+                    "sidebar" => self.sidebar = on,
+                    _ => self.confirm_delete = on,
                 }
                 Ok(format!("{option} is {on}"))
             }
+            "group_by" => match value {
+                "project" | "state" => {
+                    self.group_by = value.into();
+                    Ok(format!("the sidebar groups by {value}"))
+                }
+                _ => Err("group_by is project or state".into()),
+            },
             _ => Err(format!("no option {option:?}: dino-tui has {}", OPTIONS.join(", "))),
         }
     }
 
     pub fn show(&self) -> String {
-        format!("prefix={} status_line={} confirm_delete={}", self.prefix, self.status_line, self.confirm_delete)
+        format!("prefix={} status_line={} confirm_delete={} sidebar={} group_by={}", self.prefix, self.status_line, self.confirm_delete, self.sidebar, self.group_by)
     }
 }
 
@@ -118,6 +134,11 @@ impl Prefix {
         }
         Some(Prefix { byte: (c as u8) & 0x1f, code: c as u32, label: format!("C-{c}") })
     }
+
+    /// As a terminal shows the key: `^\`, `^A`.
+    pub fn caret(&self) -> String {
+        format!("^{}", char::from_u32(self.code).unwrap_or('?').to_ascii_uppercase())
+    }
 }
 
 #[cfg(test)]
@@ -143,6 +164,9 @@ mod tests {
         assert!(c.set("prefix", "C-[").is_err());
         assert_eq!(c.set("prefix", "C-a"), Ok("prefix is C-a".into()));
         assert!(c.set("theme", "dark").is_err());
+        assert_eq!(c.set("sidebar", "off"), Ok("sidebar is false".into()));
+        assert!(c.set("group_by", "colour").is_err());
+        assert!(c.set("group_by", "state").is_ok() && c.by_state());
         let back: Config = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
         assert_eq!(back, c);
     }

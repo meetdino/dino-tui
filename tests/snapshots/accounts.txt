@@ -1,10 +1,10 @@
-Claude accounts  in the order Claude Code tries them
+Claude accounts                      Enter use · J/K fallback order · a add · r rename · dd remove
 
-  1  ada@example.com   max   active                    5h 42% · 7d 10%
-  2  work@example.com        at its limit
-  3  Account 3
+▸ 1  ada@example.com    max    in use            5h █████░░░░░░░  42%      7d █░░░░░░░░░░░  10%
 
+  2  work@example.com          at its limit      use not reported yet
 
+  3  Account 3                 ready             use not reported yet
 
-
-J/K order · Enter first · a add · r rename · dd remove · Esc …  ada@example.com 5h 42% · 1 needs you
+  In use: ada@example.com, Claude Code's own sign-in. When it's spent, Claude Code falls back to 2,
+Esc back

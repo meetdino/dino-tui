@@ -10,8 +10,14 @@ publish = false
 
 [dependencies]
 # dinod's protocol, never copied: its IPC types, the session status the CLI and the app share, and
-# the socket path (DINO_HOME aware). Pinned to a dino release.
-dino-core = { git = "https://github.com/meetdino/dino", tag = "v0.1.12" }
+# the socket path (DINO_HOME aware). Pinned to a dino commit: 0.1.12 and the input rate
+# (`OutputRate`'s `seen_input`, meetdino/dino#216), which no release has yet.
+dino-core = { git = "https://github.com/meetdino/dino", rev = "efbc808bf183446d4c5ee367430249c3db2ffb41" }
+# The agent's screen beside the sidebar: the parser dinod keeps its replays with (dino-term's), at
+# the version dino pins, used directly (dino-term's Pane brings a PTY and spawning along).
+alacritty_terminal = "=0.26.0"
+# OSC 52 copies, passed on to the real terminal (alacritty_terminal decodes them; it brings this).
+base64 = "0.22"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29"] }
 crossterm = "0.29"
 # SIGWINCH into the event loop's wake pipe, through the same registry crossterm uses.

@@ -123,6 +123,58 @@ pub fn until(secs: u64) -> String {
     }
 }
 
+/// Unix seconds `secs` in local time: (year, month, day, hour, minute, weekday 0 = Sunday).
+pub fn local(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
+    let t = secs as libc::time_t;
+    // SAFETY: localtime_r only writes the tm it's given.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&t, &mut tm);
+        tm
+    };
+    (tm.tm_year as i64 + 1900, tm.tm_mon as u32 + 1, tm.tm_mday as u32, tm.tm_hour as u32, tm.tm_min as u32, tm.tm_wday as u32)
+}
+
+/// When, as a clock says it: `16:30` today, `Tue 09:00` another day this week, `Oct 13 09:00`
+/// further off.
+pub fn clock(secs: u64) -> String {
+    let (y, m, d, hh, mm, wd) = local(secs);
+    let (ny, nm, nd, ..) = local(now());
+    let time = format!("{hh:02}:{mm:02}");
+    if (y, m, d) == (ny, nm, nd) {
+        time
+    } else if secs.abs_diff(now()) < 6 * 86_400 {
+        format!("{} {time}", ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][wd as usize % 7])
+    } else {
+        format!("{} {d} {time}", MONTHS[(m as usize + 11) % 12])
+    }
+}
+
+pub const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/// `2026-09-12` as `Sep 12`.
+pub fn day(date: &str) -> String {
+    let mut p = date.split('-');
+    let (_, m, d) = (p.next(), p.next().and_then(|m| m.parse::<usize>().ok()), p.next().and_then(|d| d.parse::<u32>().ok()));
+    match (m, d) {
+        (Some(m @ 1..=12), Some(d)) => format!("{} {d}", MONTHS[m - 1]),
+        _ => printable(date),
+    }
+}
+
+/// `3412` as `3,412`.
+pub fn count(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 pub fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -136,6 +188,15 @@ pub fn truncate(s: &str, n: usize) -> String {
     } else {
         s.chars().take(n - 1).chain(['…']).collect()
     }
+}
+
+/// The live rate as the app's usage panel says it: `2.0k out · 16.4k in tok/s`, whichever isn't
+/// 0; `2.0k tok/s` from a dinod older than the input rate; nothing while neither moves.
+pub fn rate(r: Option<crate::app::Rate>) -> Option<String> {
+    let r = r?;
+    let Some(input) = r.input else { return (r.out > 0).then(|| format!("{} tok/s", tokens(r.out as u64))) };
+    let parts: Vec<String> = [(r.out, "out"), (input, "in")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {w}", tokens(*n as u64))).collect();
+    (!parts.is_empty()).then(|| format!("{} tok/s", parts.join(" · ")))
 }
 
 /// `1 needs you`, `2 need you`.
@@ -180,6 +241,17 @@ mod tests {
         assert_eq!(ago(5 * 3600 + 1), "5h");
         assert_eq!(truncate("abcdef", 4), "abc…");
         assert_eq!(need_you(1), "1 needs you");
+        assert_eq!(count(3412), "3,412");
+        assert_eq!(count(1_234_567), "1,234,567");
+        assert_eq!(count(12), "12");
+        assert_eq!(day("2026-09-12"), "Sep 12");
+        assert_eq!(clock(now()).len(), 5);
+        let r = |out, input| rate(Some(crate::app::Rate { out, input }));
+        assert_eq!(r(2000, Some(16_400)).as_deref(), Some("2.0k out · 16.4k in tok/s"));
+        assert_eq!(r(0, Some(900)).as_deref(), Some("900 in tok/s"));
+        assert_eq!(r(1200, None).as_deref(), Some("1.2k tok/s"));
+        assert_eq!(r(0, Some(0)), None);
+        assert_eq!(rate(None), None);
     }
 
     #[test]

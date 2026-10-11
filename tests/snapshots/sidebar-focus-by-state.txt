@@ -1,0 +1,24 @@
+                            │
+ Needs you  1               │
+  ! pricing page  dino-app  │
+     Allow npm run e2e?     │
+                            │
+ Working  3                 │
+  ● fix the tab strip       │
+  ○ tabs: compact mode      │
+  ● landing copy  website   │
+                            │
+ Done  2                    │
+  ● release notes  dino-app │
+  ● flaky e2e  dino-app  ✕  │
+                            │
+ Idle  3                    │
+    docs  dino-app          │
+                            │
+ ────────────────────────── │
+ Usage        work 7d 31% ▸ │
+ ────────────────────────── │
+ claude                     │
+ ⎇ main · 1.1k tok · 3m     │
+ j/k · Enter go · Esc back  │
+                            │

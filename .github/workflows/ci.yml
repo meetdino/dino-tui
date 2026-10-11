@@ -2,7 +2,7 @@ name: CI
 
 # What every pull request has to pass: formatting, clippy with warnings as errors, and the tests on
 # macOS and Linux (x86_64 and arm64), the end-to-end test included, against a real dinod built from
-# the dino tag Cargo.toml pins.
+# the dino commit Cargo.toml pins.
 on:
   pull_request:
   push:
@@ -17,8 +17,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # The dino whose dinod the end-to-end test runs: the tag dino-core is pinned to in Cargo.toml.
-  DINO_TAG: v0.1.12
+  # The dino whose dinod the end-to-end test runs: the commit dino-core is pinned to in Cargo.toml.
+  DINO_REF: efbc808bf183446d4c5ee367430249c3db2ffb41
 
 jobs:
   fmt:
@@ -64,12 +64,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The dinod the end-to-end test drives: dino at the pinned tag, a debug build (only a debug
+      # The dinod the end-to-end test drives: dino at the pinned commit, a debug build (only a debug
       # dinod lets a test point its proxy at a stand-in API; this test makes no model calls).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: meetdino/dino
-          ref: ${{ env.DINO_TAG }}
+          ref: ${{ env.DINO_REF }}
           path: dino-src
           persist-credentials: false
       - if: runner.os == 'Linux'
@@ -81,7 +81,7 @@ jobs:
             . -> target
             dino-src -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build dinod (dino ${{ env.DINO_TAG }})
+      - name: Build dinod (dino ${{ env.DINO_REF }})
         run: cargo build --manifest-path dino-src/Cargo.toml -p dino --locked
       - run: cargo build --all-targets --locked
       - name: Tests, the end-to-end one against that dinod
