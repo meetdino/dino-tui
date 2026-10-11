@@ -8,6 +8,7 @@ mod format;
 mod input;
 mod live;
 mod order;
+mod settings;
 mod ui;
 mod wake;
 
@@ -128,7 +129,14 @@ fn event_loop(term: &mut Term, app: &mut App, waker: &wake::Waker<Event>, wake: 
                 continue;
             }
             Some(Want::Settings) => {
-                app.flash(":settings isn't in this build yet");
+                leave();
+                let said = settings::edit(&mut |v| conn::raw(v));
+                enter()?;
+                fresh(term)?;
+                match said {
+                    Ok(s) => app.flash(s),
+                    Err(e) => app.flash_err(format!("{e:#}")),
+                }
                 continue;
             }
             None => {}
