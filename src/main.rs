@@ -205,10 +205,11 @@ fn status_text(app: &App, id: &str) -> String {
         Status::Ended => "ended",
         Status::Exited => "exited",
     };
-    let others = app.needs_count() - (Status::of(s) == Status::NeedsYou) as usize;
+    let others = app.needs_count().saturating_sub((Status::of(s) == Status::NeedsYou) as usize);
     let needs = if others > 0 { format!(" · {} elsewhere", format::need_you(others)) } else { String::new() };
     let info = [Some(format::printable(format::agent(s))), format::model(s), format::mode(s)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-    format!(" {} · {info} · {st}{needs}   {} d list · {0} n/p next/prev", format::name(s), app.config.prefix().label)
+    let (name, prefix) = (format::name(s), app.config.prefix().label);
+    format!(" {name} · {info} · {st}{needs}   {prefix} d list · {prefix} n/p next/prev")
 }
 
 fn attach(term: &mut Term, app: &mut App, waker: &wake::Waker<Event>, wake: &mut wake::Wake<Event>, mut id: String) -> anyhow::Result<()> {
