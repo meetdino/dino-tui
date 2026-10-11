@@ -1,0 +1,26 @@
+website  /srv/website
+▴ ┌ keys ─────────────────────────────────────────────────────────────────────────────┐ 2h
+  │ j k  gg G  C-d C-u  move                                                          │52s
+  │ /                   filter by name, folder or agent (Esc clears)                  │ 1d
+di│ Enter l             attach                                                        │
+  │ o / O               new session here / in a new worktree                          │now
+  │ i                   send a prompt without attaching                               │ 3m
+no│ I                   interrupt the agent's turn                                    │
+  │ m                   mode, model, effort                                           │ 3m
+  │ f / F               fork / fork into a worktree                                   │
+  │ R                   resume an ended session                                       │
+  │ r                   rename                                                        │
+  │ p                   pin or unpin                                                  │
+  │ a                   archive (:archived lists them)                                │
+  │ x  u                close, u undoes it                                            │
+  │ dd                  delete                                                        │
+  │ A                   Claude accounts                                               │
+  │ :                   command line (:new :found :archived :stats :settings :set :q) │
+  │ q                   quit; agents keep running                                     │
+  │ C-\ d / q           attached: back to the list                                    │
+  │ C-\ n / p / N       attached: next, previous, next that needs you                 │
+  │ C-\ m / :           attached: picker, command line                                │
+  │ C-\ C-\             attached: send the prefix key itself                          │
+  └───────────────────────────────────────────────────────────────────────────────────┘
+
+Enter attach · o new · : command · ? keys             ada@example.com 5h 42% · 1 needs you

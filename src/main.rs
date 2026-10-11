@@ -9,6 +9,8 @@ mod input;
 mod live;
 mod order;
 mod settings;
+#[cfg(test)]
+mod snapshots;
 mod ui;
 mod wake;
 

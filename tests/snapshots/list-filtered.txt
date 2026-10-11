@@ -1,0 +1,8 @@
+website  /srv/website
+▴ ✓  landing copy  claude                                                                         2h
+  ●  pricing page  claude                                                                        52s
+  –  old spike     claude                                                                         1d
+
+
+
+/website  (Esc clears)                                          ada@example.com 5h 42% · 1 needs you

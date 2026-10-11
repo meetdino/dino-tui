@@ -1,0 +1,6 @@
+website  /srv/website
+▴ ✓  landing copy       claude                                                                    2h
+  ●  pricing page       claude                                                                   52s
+  –  old spike          claude                                                                    1d
+dino-app  /srv/dino-app
+new ▸ agent: claude   folder: /srv/website   worktree: yes   prompt: add a dark mode toggle

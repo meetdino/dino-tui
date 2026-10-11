@@ -1,0 +1,14 @@
+website  /srv/website
+▴ ✓  landing copy       claude                                                                    2h
+  ●  pricing page       claude                                                                   52s
+  –  old spike          claude                                                                    1d
+dino-app  /srv/dino-app
+  ⠋  fix the tab strip  claude · opus-4-5 · bypass                                   12.4k tok   now
+  ✓  release notes      claude · sonnet-4-5 · plan                                    2.1M tok    3m
+notes  /srv/notes
+  ○  shell              shell                                                                     3m
+
+
+
+
+Enter attach · o new · : command · ? keys                       ada@example.com 5h 42% · 1 needs you
