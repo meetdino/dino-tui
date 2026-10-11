@@ -1,0 +1,6 @@
+
+
+        No sessions. o starts one here; :new <agent> [folder] anywhere.
+
+
+o new · : command · ? keys · q quit

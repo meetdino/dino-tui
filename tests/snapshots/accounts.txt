@@ -1,0 +1,10 @@
+Claude accounts  in the order Claude Code tries them
+
+  1  ada@example.com   max   active                    5h 42% · 7d 10%
+  2  work@example.com        at its limit
+  3  Account 3
+
+
+
+
+J/K order · Enter first · a add · r rename · dd remove · Esc …  ada@example.com 5h 42% · 1 needs you
