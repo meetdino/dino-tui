@@ -1,0 +1,6 @@
+# The toolchain CI builds, tests and lints with, which rustup picks in this checkout: the one dino
+# uses. The oldest Rust dino-tui builds with is Cargo.toml's rust-version (dino-core's).
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

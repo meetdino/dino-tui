@@ -1,0 +1,30 @@
+[package]
+name = "dino-tui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT"
+description = "A minimal, keyboard-only terminal client for dino's dinod"
+repository = "https://github.com/meetdino/dino-tui"
+publish = false
+
+[dependencies]
+# dinod's protocol, never copied: its IPC types, the session status the CLI and the app share, and
+# the socket path (DINO_HOME aware). Pinned to a dino release; move it to v0.1.12 once that's out
+# (it adds `OutputRate`, which this asks for untyped until then).
+dino-core = { git = "https://github.com/meetdino/dino", tag = "v0.1.11" }
+crossterm = "0.29"
+# SIGWINCH into the event loop's wake pipe, through the same registry crossterm uses.
+signal-hook = "0.3"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
