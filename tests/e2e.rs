@@ -2,7 +2,7 @@
 //! temporary HOME and DINO_HOME, with the stand-in Claude in tests/standin, and dino-tui in a
 //! pseudo-terminal whose screen a vt100 parser keeps. It creates a session, attaches, detaches
 //! with the prefix, renames, closes and undoes, and reorders Claude accounts, checking each on
-//! screen and in dinod.
+//! screen and in dinod; and opens the command line's screens (usage, archived, found, settings).
 //!
 //! Without `DINO_BIN` it says so and passes, unless `DINO_TUI_E2E=1` (CI) makes that a failure. No
 //! real account, token, agent or model is involved: the stand-in makes no model calls here
@@ -46,6 +46,8 @@ impl Dinod {
             ("DINO_CLAUDE_ACCOUNT_STORE".into(), "file".into()),
             ("STANDIN_OFFLINE".into(), "1".into()),
             ("STANDIN_EMAIL".into(), "ada@example.com".into()),
+            // The editor :settings opens: one edit, as a person would make it.
+            ("EDITOR".into(), "perl -pi -e 's/close_merged = false/close_merged = true/'".into()),
         ]
     }
 
@@ -267,6 +269,24 @@ fn create_attach_detach_rename_close_undo_and_account_order() {
     tui.keys(b"\x1c");
     tui.keys(b"q");
     tui.wait("Enter attach");
+
+    // The command line's screens: each asks dinod and shows its answer.
+    for (cmd, shows) in [("stats 7d", "Usage"), ("archived", "nothing archived"), ("found", "Found")] {
+        tui.keys(b":");
+        tui.typed(cmd);
+        tui.keys(b"\r");
+        tui.wait(shows);
+        tui.wait_for("its answer", |t| !t.contains("asking dinod"));
+        tui.keys(b"\x1b");
+        tui.wait("Enter attach");
+    }
+    // :settings: the editor (here a one-line edit) changes it in dinod.
+    tui.keys(b":");
+    tui.typed("settings");
+    tui.keys(b"\r");
+    tui.wait("settings saved");
+    let settings = std::fs::read_to_string(d.root.join("dino/settings.toml")).unwrap();
+    assert!(settings.contains("close_merged = true"), "{settings}");
 
     // Account order: account 3 up above 2.
     tui.keys(b"A");
