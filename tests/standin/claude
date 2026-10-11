@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""A stand-in for Claude Code, for dino-tui's tests: what dinod sees of one, and nothing else.
+
+Named `claude` on the test dinod's PATH, so dinod offers it as Claude Code and starts it with the
+flags it gives Claude: its hooks (`--settings`, HTTP hooks to dinod), `--model`, the permission
+mode, the session id. It reports a turn the way Claude's hooks do (UserPromptSubmit, then Stop),
+asks for a permission when the prompt starts with "ask" (PermissionRequest: the session needs you),
+and answers through dinod's proxy when ANTHROPIC_BASE_URL is set (a debug dinod sends that to a
+stand-in API; see api.py), else on its own. Esc interrupts a turn, Shift+Tab steps the mode, /exit
+quits. `auth status --json` says who account 1 is; `setup-token` is a browser sign-in that
+prints a made-up token for the code it's given. No real account, model or network is involved.
+"""
+
+import json
+import os
+import select
+import sys
+import time
+import urllib.request
+
+ARGS = sys.argv[1:]
+
+
+def flag(name, default=None):
+    if name in ARGS:
+        i = ARGS.index(name)
+        if i + 1 < len(ARGS):
+            return ARGS[i + 1]
+    return default
+
+
+if ARGS[:2] == ["auth", "status"]:
+    print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "email": os.environ.get("STANDIN_EMAIL", "ada@example.com"), "orgId": "org-standin-1", "subscriptionType": "max"}))
+    sys.exit(0)
+if ARGS[:1] in (["--version"], ["-v"]):
+    print("2.1.300 (Claude Code)")
+    sys.exit(0)
+if ARGS[:1] == ["setup-token"]:
+    print("Browser didn't open? Use the url below to sign in (c to copy)\n")
+    print("https://claude.ai/oauth/authorize?code=true&client_id=standin-client&state=standin\n")
+    sys.stdout.write("Paste code here if prompted > ")
+    sys.stdout.flush()
+    code = sys.stdin.readline().strip()
+    word = "".join(c for c in code if c.isalnum())[:20] or "x"
+    print("\n\nYour OAuth token (valid for 1 year):\n")
+    print("sk-ant-oat01-STANDIN" + word + "a" * 60)
+    sys.stdout.flush()
+    time.sleep(0.5)
+    sys.exit(0)
+
+if "-p" in ARGS or "--print" in ARGS:
+    # One call through dinod's proxy, signed with the token it's given: how dinod checks an
+    # account just signed in to. The answer as `--output-format json` prints it.
+    base = os.environ.get("ANTHROPIC_BASE_URL")
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    ok, text = False, "no ANTHROPIC_BASE_URL"
+    if base:
+        body = {"model": "claude-haiku-4-5", "max_tokens": 16, "stream": True, "messages": [{"role": "user", "content": "Reply with the word OK"}]}
+        req = urllib.request.Request(base.rstrip("/") + "/v1/messages", data=json.dumps(body).encode(), headers={"content-type": "application/json", "authorization": f"Bearer {token}", "anthropic-version": "2023-06-01"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                r.read()
+            ok, text = True, "OK"
+        except Exception as e:
+            text = str(e)
+    print(json.dumps({"type": "result", "is_error": not ok, "result": text}))
+    sys.exit(0 if ok else 1)
+
+hooks_url = None
+settings = flag("--settings")
+if settings:
+    try:
+        # A path to it, or the JSON itself, as Claude Code takes either.
+        if not settings.lstrip().startswith("{"):
+            settings = open(settings).read()
+        hooks = json.loads(settings).get("hooks", {})
+        for entries in hooks.values():
+            hooks_url = entries[0]["hooks"][0]["url"]
+            break
+    except Exception:
+        pass
+session_id = flag("--session-id") or flag("--resume") or "standin"
+# The first message, after `--`, as dinod passes a prompt.
+first = " ".join(ARGS[ARGS.index("--") + 1:]) if "--" in ARGS else ""
+model = flag("--model") or "opus"
+modes = ["default", "acceptEdits", "plan"]
+mode = flag("--permission-mode") or "default"
+MODE_FOOTER = {"default": "⏸ manual mode on", "acceptEdits": "⏵⏵ accept edits on (shift+tab to cycle)", "plan": "⏸ plan mode on (shift+tab to cycle)", "bypassPermissions": "⏵⏵ bypass permissions on"}
+
+
+def hook(event, **extra):
+    if not hooks_url:
+        return
+    body = {"hook_event_name": event, "session_id": session_id, "cwd": os.getcwd(), "permission_mode": mode, **extra}
+    try:
+        req = urllib.request.Request(hooks_url, data=json.dumps(body).encode(), headers={"content-type": "application/json"})
+        urllib.request.urlopen(req, timeout=3).read()
+    except Exception:
+        pass
+
+
+def record(role, text):
+    """Keep the turn in a transcript where Claude Code keeps its own, so dinod sees a conversation
+    (to resume, to fork)."""
+    home = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    d = os.path.join(home, "projects", os.getcwd().replace("/", "-").replace(".", "-"))
+    try:
+        os.makedirs(d, exist_ok=True)
+        line = {"type": role, "sessionId": session_id, "cwd": os.getcwd(), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()), "message": {"role": role, "content": text}}
+        with open(os.path.join(d, session_id + ".jsonl"), "a") as f:
+            f.write(json.dumps(line) + "\n")
+    except OSError:
+        pass
+
+
+def out(s):
+    sys.stdout.write(s)
+    sys.stdout.flush()
+
+
+def keys_waiting(timeout=0.0):
+    return select.select([sys.stdin], [], [], timeout)[0]
+
+
+TYPEAHEAD = []
+
+
+def read_key():
+    return os.read(sys.stdin.fileno(), 64)
+
+
+def interrupted():
+    """Esc among the keys typed while it answers; the rest is kept for the prompt, as Claude does."""
+    if not keys_waiting():
+        return False
+    k = read_key()
+    if b"\x1b" in k:
+        return True
+    TYPEAHEAD.append(k)
+    return False
+
+
+def answer(prompt):
+    """Stream an answer: from the stand-in API through dinod's proxy, else made up here. False
+    when Esc interrupted it."""
+    base = os.environ.get("ANTHROPIC_BASE_URL")
+    words = None
+    if base and os.environ.get("STANDIN_OFFLINE") != "1":
+        body = {"model": model, "max_tokens": 1024, "stream": True, "messages": [{"role": "user", "content": prompt}]}
+        req = urllib.request.Request(base.rstrip("/") + "/v1/messages", data=json.dumps(body).encode(), headers={"content-type": "application/json", "x-api-key": "standin", "anthropic-version": "2023-06-01"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                for raw in r:
+                    line = raw.decode(errors="replace").strip()
+                    if interrupted():
+                        return False
+                    if line.startswith("data:"):
+                        ev = json.loads(line[5:])
+                        if ev.get("type") == "content_block_delta":
+                            out(ev["delta"].get("text", ""))
+            return True
+        except Exception as e:
+            out(f"(the stand-in API didn't answer: {e}) ")
+    words = f"Stand-in answer to: {prompt}. Nothing real ran.".split()
+    for w in words:
+        time.sleep(0.08)
+        if interrupted():
+            return False
+        out(w + " ")
+    return True
+
+
+def draw_prompt(text=""):
+    out(f"\r\n\x1b[2m{MODE_FOOTER.get(mode, mode)} · {model}\x1b[0m\r\n❯ {text}")
+
+
+def main():
+    global mode
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tty.setraw(fd)
+    try:
+        out("\x1b]0;✳ Claude Code\x07")
+        out("\x1b[1m✳ Stand-in Claude\x1b[0m  (dino-tui's tests)\r\n")
+        hook("SessionStart", source="startup")
+        line = ""
+        draw_prompt()
+        pending = (first + "\r").encode() if first else b""
+        while True:
+            if pending:
+                b, pending = pending, b""
+            elif TYPEAHEAD:
+                b = TYPEAHEAD.pop(0)
+            else:
+                b = read_key()
+            if not b:
+                return
+            if b == b"\x1b[Z":
+                i = modes.index(mode) if mode in modes else -1
+                mode = modes[(i + 1) % len(modes)]
+                draw_prompt(line)
+                continue
+            for ch in b.decode(errors="replace"):
+                if ch in "\r\n":
+                    text = line.strip()
+                    line = ""
+                    if text == "/exit":
+                        out("\r\n")
+                        return
+                    if not text:
+                        draw_prompt()
+                        continue
+                    out("\r\n\r\n")
+                    record("user", text)
+                    hook("UserPromptSubmit", prompt=text)
+                    if text.startswith("ask"):
+                        hook("PermissionRequest", tool_name="Bash", tool_input={"command": "rm -rf build"})
+                        out("\x1b[1mBash(rm -rf build)\x1b[0m  Allow it? y/n ")
+                        while True:
+                            k = read_key()
+                            if k in (b"y", b"n", b"\x1b"):
+                                break
+                        out(k.decode() + "\r\n")
+                        hook("PostToolUse", tool_name="Bash", tool_input={"command": "rm -rf build"})
+                    done = answer(text)
+                    record("assistant", "(stand-in answer)")
+                    if not done:
+                        out("\r\n\x1b[2mInterrupted\x1b[0m")
+                    hook("Stop")
+                    draw_prompt()
+                elif ch == "\x7f":
+                    if line:
+                        line = line[:-1]
+                        out("\b \b")
+                elif ch == "\x03":
+                    return
+                elif ch == "\x15":
+                    out("\b \b" * len(line))
+                    line = ""
+                elif ch >= " ":
+                    line += ch
+                    out(ch)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+main()
