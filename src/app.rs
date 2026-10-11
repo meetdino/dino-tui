@@ -1241,8 +1241,8 @@ impl App {
                 if self.unsupported.contains("use") {
                     return self.flash(format!("this dinod ({}) can't switch accounts yet: update dino", self.dinod));
                 }
-                if a.answering && (a.number == 1 || self.chosen.contains(&a.number)) {
-                    return self.flash(format!("{} is in use already", format::printable(&a.label())));
+                if self.chosen.first().copied().unwrap_or(1) == a.number {
+                    return self.flash(format!("{} is the one Claude Code goes to first already", format::printable(&a.label())));
                 }
                 let name = format::printable(&a.label());
                 self.switched = None;
