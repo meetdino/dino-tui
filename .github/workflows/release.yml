@@ -26,9 +26,10 @@ jobs:
         include:
           - runner: macos-latest
             target: darwin-arm64
-          - runner: ubuntu-24.04
+          # The oldest Ubuntu GitHub runs: the binary needs that glibc (2.35) or newer.
+          - runner: ubuntu-22.04
             target: linux-x64
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-22.04-arm
             target: linux-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -61,6 +62,8 @@ jobs:
           cp target/release/dino-tui LICENSE README.md "$name/"
           tar -czf "$name.tar.gz" "$name"
           ./"$name"/dino-tui --version
+          # What it links (SQLite comes with dino-core, unused).
+          if [ "$RUNNER_OS" = Linux ]; then ldd "$name/dino-tui"; else otool -L "$name/dino-tui"; fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.target }}
