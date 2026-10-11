@@ -167,8 +167,7 @@ These are vim-style, with Tab completion:
   The full-screen TUI removed in meetdino/dino d934b07 (its parent's crates/dino/src/main.rs) is a
   source to borrow from, not to restore.
 - **Protocol:** use `dino-core`'s `ipc` types through a git dependency on meetdino/dino, pinned to
-  a tag: v0.1.11 now, v0.1.12 once out. Never copy the types. The two requests sent as plain JSON
-  are `OutputRate` (not in v0.1.11's types; typed once pinned to v0.1.12) and the settings round
+  a tag: v0.1.12. Never copy the types. The one request sent as plain JSON is the settings round
   trip (above). dino-core also brings rusqlite (the system SQLite; Linux builds need
   `libsqlite3-dev`) and, on macOS, security-framework, though dino-tui uses neither.
 - **Connection:** the socket path is the one `dino` uses (DINO_HOME aware). If dinod isn't
@@ -202,8 +201,8 @@ These are vim-style, with Tab completion:
 
 Where v1 differs from the spec as first written, and why. Each is applied above.
 
-- **The live tok/s** needs `OutputRate`, which dinod has from 0.1.12. Pinned to v0.1.11, dino-tui
-  asks for it as plain JSON and hides the rate when dinod refuses it, as it does from 0.1.11.
+- **The live tok/s** needs `OutputRate`, which dinod has from 0.1.12. dino-tui hides the rate when
+  an older dinod refuses it.
 - **Account order:** dinod tries Claude Code's own sign-in first, always; `order` orders only the
   added accounts. "Switch to it" makes an account the first added one.
 - **Accounts keys added:** `c` pastes the sign-in code (`login_code`), `x` cancels a sign-in, `r`
