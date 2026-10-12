@@ -20,19 +20,30 @@ Enter attach · o new · : command · ? keys       ada@example.com 5h 42% · 1 n
 
 ## Install
 
+On Linux (Ubuntu 22.04 or later, Debian 12 or later, or another Linux with glibc 2.35 or newer, on
+x86_64 or arm64), one command installs dino and dino-tui, from dino 0.1.13 on:
+
 ```
-curl -fsSL https://meetdino.com/install.sh | sh -s -- --tui
+curl -fsSL https://meetdino.com/install.sh | sh
 ```
 
-That installs dino-tui to `~/.local/bin`, checked against the release's SHA256SUMS. Or download it
-from [Releases](https://github.com/meetdino/dino-tui/releases): macOS on Apple silicon, Linux on
-x86_64 and arm64. It needs dino itself, from [meetdino.com](https://meetdino.com) or
+A fresh Ubuntu Desktop has no curl: `sudo apt install curl` first. Both go in `~/.local/bin`,
+each checked against its release's SHA256SUMS, without sudo, and the installer prints the line that
+puts that folder on your `PATH` if it isn't there yet. Then run `dino`: it starts dinod and opens
+dino-tui, whose first screen is setup. To start dinod at login, run `dino service install` (a
+systemd user service); on a server, `loginctl enable-linger $USER` keeps it running after you log
+out.
+
+On a Mac, or with dino already installed, `curl -fsSL https://meetdino.com/install.sh | sh -s -- --tui`
+installs dino-tui alone. Or download it from
+[Releases](https://github.com/meetdino/dino-tui/releases): macOS on Apple silicon, Linux on x86_64
+and arm64. On a Mac, dino itself comes from [meetdino.com](https://meetdino.com) or
 `brew install meetdino/tap/dino`.
 
 ## Use
 
-It needs a running dinod from dino 0.1.11 or later (`dino daemon &`, or the Dino app, which
-starts it); it never starts one itself. Then run `dino-tui`. The live rate needs 0.1.12's dinod,
+It needs a running dinod from dino 0.1.11 or later, and never starts one itself: `dino tui` (and,
+on Linux, plain `dino`) starts dinod and then opens dino-tui, as does the Dino app on a Mac. The live rate needs 0.1.12's dinod,
 and switching Claude accounts a newer one; with an older dinod those hide.
 
 - `j`/`k`, `gg`/`G`, `Ctrl-d`/`Ctrl-u` move; `/` filters; `Enter` attaches.
