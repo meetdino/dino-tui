@@ -1335,7 +1335,7 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => l.step(-1),
             KeyCode::Enter => {
                 let Some(a) = l.items.get(l.cursor) else { return };
-                let name = format::printable(a.label.as_deref().unwrap_or(&a.name));
+                let name = format::printable(a.title.as_deref().or(a.label.as_deref()).unwrap_or(&a.name));
                 let id = a.id.clone();
                 self.send(Tag::Unarchived(name), Request::Unarchive { id });
             }

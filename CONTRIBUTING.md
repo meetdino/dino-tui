@@ -23,7 +23,7 @@ dino commit `Cargo.toml` pins, named by `DINO_BIN`:
 
 ```sh
 git clone https://github.com/meetdino/dino ../dino
-(cd ../dino && git checkout 59fd8fb53cc375dd2e7dcaa3d2379ec0eed93d19 && cargo build -p dino)
+(cd ../dino && git checkout f1724eeaca5b1f62244ba571a7980eafbf474de4 && cargo build -p dino)
 DINO_BIN=$PWD/../dino/target/debug/dino cargo test --test e2e
 ```
 

@@ -531,7 +531,7 @@ fn archived(f: &mut Frame, app: &App, area: Rect) {
         .items
         .iter()
         .map(|a| {
-            let name = format::printable(a.label.as_deref().unwrap_or(&a.name));
+            let name = format::printable(a.title.as_deref().or(a.label.as_deref()).unwrap_or(&a.name));
             let branch = a.branch.as_deref().map(format::printable).unwrap_or_default();
             format!(
                 "  {}  {}  {}  {}  {}",
