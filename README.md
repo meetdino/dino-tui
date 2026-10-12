@@ -5,6 +5,8 @@ vim for agents. A list you move through with `j`/`k`, `Enter` to be inside an ag
 get back. Everything real (sessions, accounts, worktrees, usage, settings) lives in dinod;
 dino-tui shows it and sends requests. It runs on macOS and Linux, where it's dino's only UI.
 
+![dino-tui attached to Claude Code: the sessions in a sidebar beside it, grouped by repo, the one that needs you with what it asks, and your Claude accounts' usage at its foot](docs/sidebar.png)
+
 ```
 website  ~/work/website
 ▴ ✓  landing copy       claude · opus · ask                    10.7k tok   2h
@@ -35,6 +37,10 @@ and switching Claude accounts a newer one; with an older dinod those hide.
 - `A` lists your Claude accounts: `Enter` makes Claude Code use one, `J`/`K` order the rest.
   `:stats` shows usage; `:setup` is the first run's setup again (agents, accounts, sync, the
   default agent); `:settings` opens dinod's settings in `$EDITOR`. `?` lists every key.
+
+![The accounts screen: account 1 in use with its 5-hour and 7-day limits, and the two Claude Code falls back to](docs/accounts.png)
+
+![:stats 30d: tokens by kind, per day and model, the activity grid, routes and the top sessions](docs/usage.png)
 
 Its own config is `~/.config/dino-tui/config.toml` (`:set` changes it): the prefix key,
 `status_line`, `confirm_delete`, `sidebar` and `group_by` (`project` or `state`).
