@@ -1,8 +1,9 @@
 //! dino-tui end to end: a real dinod (`DINO_BIN`, built from the dino commit Cargo.toml pins) in a
 //! temporary HOME and DINO_HOME, with the stand-in Claude in tests/standin, and dino-tui in a
 //! pseudo-terminal whose screen a vt100 parser keeps. It creates a session, attaches, detaches
-//! with the prefix, renames, closes and undoes, and reorders Claude accounts, checking each on
-//! screen and in dinod; and opens the command line's screens (usage, archived, found, settings).
+//! with the prefix, renames, closes and undoes, archives and brings back, and reorders Claude
+//! accounts, checking each on screen and in dinod; and opens the command line's screens (usage,
+//! archived, found, settings).
 //! v2's: the first-run setup card, the sidebar beside a session and its keys, collapsing it to the
 //! raw passthrough and back, a narrow terminal's status line, using an account, and usage.
 //!
@@ -349,6 +350,32 @@ fn create_attach_detach_rename_close_undo_and_account_order() {
     let names: Vec<String> = accounts["accounts"]["accounts"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(names[1..], ["side".to_string(), "work".to_string()], "{accounts}");
     tui.keys(b"\x1b");
+
+    // Archived, a session is listed by the name it went by, here its agent's for the
+    // conversation (Claude's /rename), not dino's "claude"; Enter brings it back.
+    d.req(serde_json::json!({"type": "rename", "id": id, "name": ""}));
+    tui.keys(b"\r");
+    tui.wait("hello from e2e");
+    // What was typed while attached is still on its line.
+    tui.keys(b"\x15");
+    tui.typed("/rename Bio rewrite");
+    tui.keys(b"\r");
+    wait_until("the agent's name for it", || d.sessions().iter().any(|s| s["id"] == id.as_str() && s["title"] == "Bio rewrite"));
+    tui.keys(b"\x1c");
+    tui.keys(b"q");
+    tui.wait("Enter attach");
+    tui.keys(b"a");
+    tui.wait(":archived brings it back");
+    wait_until("dinod archived it", || d.sessions().is_empty());
+    tui.keys(b":");
+    tui.typed("archived");
+    tui.keys(b"\r");
+    let archived = tui.wait_for("the archive", |t| t.contains("Enter bring it back") && !t.contains("asking dinod"));
+    assert!(archived.lines().any(|l| l.trim_start_matches([' ', '\u{25b8}']).starts_with("Bio rewrite")), "{archived}");
+    tui.keys(b"\r");
+    tui.wait("Bio rewrite is back");
+    wait_until("dinod started it again", || d.sessions().len() == 1);
+    let id = d.sessions()[0]["id"].as_str().unwrap().to_string();
 
     // q quits; the agent keeps running in dinod.
     std::thread::sleep(Duration::from_millis(200));

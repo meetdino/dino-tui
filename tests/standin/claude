@@ -6,8 +6,8 @@ flags it gives Claude: its hooks (`--settings`, HTTP hooks to dinod), `--model`,
 mode, the session id. It reports a turn the way Claude's hooks do (UserPromptSubmit, then Stop),
 asks for a permission when the prompt starts with "ask" (PermissionRequest: the session needs you),
 and answers through dinod's proxy when ANTHROPIC_BASE_URL is set (a debug dinod sends that to a
-stand-in API; see api.py), else on its own. Esc interrupts a turn, Shift+Tab steps the mode, /exit
-quits. `auth status --json` says who account 1 is; `setup-token` is a browser sign-in that
+stand-in API; see api.py), else on its own. Esc interrupts a turn, Shift+Tab steps the mode, /rename
+names the conversation on its terminal's title, /exit quits. `auth status --json` says who account 1 is; `setup-token` is a browser sign-in that
 prints a made-up token for the code it's given. No real account, model or network is involved.
 """
 
@@ -210,6 +210,11 @@ def main():
                     if text == "/exit":
                         out("\r\n")
                         return
+                    # Claude's /rename: the conversation's name, on its terminal's title.
+                    if text.startswith("/rename "):
+                        out(f"\x1b]0;\u2733 {text[len('/rename '):].strip()}\x07")
+                        draw_prompt()
+                        continue
                     if not text:
                         draw_prompt()
                         continue

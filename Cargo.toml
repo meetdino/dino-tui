@@ -13,7 +13,7 @@ publish = false
 # the socket path (DINO_HOME aware). Pinned to a dino commit: 0.1.12, the input rate (`OutputRate`'s
 # `seen_input`, meetdino/dino#216) and choosing the Claude account (`use`, #217), which no release
 # has yet.
-dino-core = { git = "https://github.com/meetdino/dino", rev = "59fd8fb53cc375dd2e7dcaa3d2379ec0eed93d19" }
+dino-core = { git = "https://github.com/meetdino/dino", rev = "f1724eeaca5b1f62244ba571a7980eafbf474de4" }
 # The agent's screen beside the sidebar: the parser dinod keeps its replays with (dino-term's), at
 # the version dino pins, used directly (dino-term's Pane brings a PTY and spawning along).
 alacritty_terminal = "=0.26.0"
