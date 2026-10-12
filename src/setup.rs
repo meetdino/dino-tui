@@ -622,7 +622,7 @@ fn rows(app: &App) -> Vec<Row> {
             Some(Ok(false)) => (
                 vec![Span::raw("off: the first `dino` you run starts dinod")],
                 Some("Enter  turn on".to_string()),
-                vec![Span::styled("Runs `dino service install`: a systemd user service, up at boot.", dim())],
+                vec![Span::styled("Runs `dino service install`: a systemd user service, up when you log in.", dim())],
             ),
             Some(Err(e)) => (vec![Span::styled(format!("can't tell: {}", format::printable(e)), dim())], None, vec![]),
         };

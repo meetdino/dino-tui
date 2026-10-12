@@ -20,7 +20,7 @@
   Found on this machine   2 running in other terminals · 14 past ones               Enter  look
 
   Start at login          off: the first `dino` you run starts dinod                Enter  turn on
-                          Runs `dino service install`: a systemd user service, up at boot.
+                          Runs `dino service install`: a systemd user service, up when you log in.
 
 
 
