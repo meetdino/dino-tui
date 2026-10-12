@@ -18,6 +18,17 @@ dino-app  ~/work/dino-app
 Enter attach · o new · : command · ? keys       ada@example.com 5h 42% · 1 needs you
 ```
 
+## Install
+
+```
+curl -fsSL https://meetdino.com/install.sh | sh -s -- --tui
+```
+
+That installs dino-tui to `~/.local/bin`, checked against the release's SHA256SUMS. Or download it
+from [Releases](https://github.com/meetdino/dino-tui/releases): macOS on Apple silicon, Linux on
+x86_64 and arm64. It needs dino itself, from [meetdino.com](https://meetdino.com) or
+`brew install meetdino/tap/dino`.
+
 ## Use
 
 It needs a running dinod from dino 0.1.11 or later (`dino daemon &`, or the Dino app, which
